@@ -1,0 +1,1668 @@
+(() => {
+  const statusElement = document.getElementById("status");
+  const toolsView = document.getElementById("toolsView");
+  const bookmarksView = document.getElementById("bookmarksView");
+  const toolsViewButton = document.getElementById("toolsViewButton");
+  const bookmarksViewButton = document.getElementById("bookmarksViewButton");
+  const dryRunToggle = document.getElementById("dryRunToggle");
+  const draftSectionToggle = document.getElementById("draftSectionToggle");
+  const draftSectionBody = document.getElementById("draftSectionBody");
+  const draftEmailSelect = document.getElementById("draftEmailSelect");
+  const draftSkuLimitInput = document.getElementById("draftSkuLimitInput");
+  const draftScheduleIntervalInput = document.getElementById("draftScheduleIntervalInput");
+  const draftScheduleSaveButton = document.getElementById("draftScheduleSaveButton");
+  const draftScheduleDisableButton = document.getElementById("draftScheduleDisableButton");
+  const draftScheduleStatus = document.getElementById("draftScheduleStatus");
+  const draftCollectionStatus = document.getElementById("draftCollectionStatus");
+  const draftCollectionCount = document.getElementById("draftCollectionCount");
+  const draftCollectionToggle = document.getElementById("draftCollectionToggle");
+  const draftCsvModeToggle = document.getElementById("draftCsvModeToggle");
+  const draftModeLabel = document.getElementById("draftModeLabel");
+  const draftProgressContainer = document.getElementById("draftProgressContainer");
+  const draftProgressFill = document.getElementById("draftProgressFill");
+  const draftProgressText = document.getElementById("draftProgressText");
+  const draftCollectionExportButton = document.getElementById("draftCollectionExportButton");
+  const draftCollectionResetButton = document.getElementById("draftCollectionResetButton");
+  const draftScrapingNoRetoolButton = document.getElementById("draftScrapingNoRetoolButton");
+  const draftStopButton = document.getElementById("draftStopButton");
+  const ibaSectionToggle = document.getElementById("ibaSectionToggle");
+  const ibaSectionBody = document.getElementById("ibaSectionBody");
+  const ibaAutomationButton = document.getElementById("ibaAutomationButton");
+  const ibaScheduleTimeInput = document.getElementById("ibaScheduleTimeInput");
+  const ibaScheduleSaveButton = document.getElementById("ibaScheduleSaveButton");
+  const ibaScheduleDisableButton = document.getElementById("ibaScheduleDisableButton");
+  const ibaScheduleStatus = document.getElementById("ibaScheduleStatus");
+  const ibaStopButton = document.getElementById("ibaStopButton");
+  const marketSectionToggle = document.getElementById("marketSectionToggle");
+  const marketSectionBody = document.getElementById("marketSectionBody");
+  const marketCurrentLabel = document.getElementById("marketCurrentLabel");
+  const marketRefreshButton = document.getElementById("marketRefreshButton");
+  const marketRunPricingButton = document.getElementById("marketRunPricingButton");
+  const marketList = document.getElementById("marketList");
+  const marketSearchInput = document.getElementById("marketSearchInput");
+  const marketSelectionCountBadge = document.getElementById("marketSelectionCount");
+  const notScPanel = document.getElementById("notScPanel");
+  const toolsPanel = document.getElementById("toolsPanel");
+  const violationsSectionToggle = document.getElementById("violationsSectionToggle");
+  const violationsSectionBody = document.getElementById("violationsSectionBody");
+  const violationsScheduleSaveButton = document.getElementById("violationsScheduleSaveButton");
+  const violationsScheduleStatus = document.getElementById("violationsScheduleStatus");
+  const pricingFixerButton = document.getElementById("pricingFixerButton");
+  const b2bFixerButton = document.getElementById("b2bFixerButton");
+  const shippingTemplateSectionToggle = document.getElementById("shippingTemplateSectionToggle");
+  const shippingTemplateSectionBody = document.getElementById("shippingTemplateSectionBody");
+  const shippingTemplateTestButton = document.getElementById("shippingTemplateTestButton");
+  const shippingTemplateStatus = document.getElementById("shippingTemplateStatus");
+  const violationsStopButton = document.getElementById("violationsStopButton");
+  const ibaStartUrl = "https://sellercentral.amazon.de/orders-v3/mfn/unshipped?orderType=IBA&orderStatus=unshipped&fulfillmentType=mfn&page=1&date-range=last-30&_ibaStart=1";
+  const pricingFixerUrl = "https://sellercentral.amazon.de/myinventory/inventory?fulfilledBy=all&page=1&pageSize=250&sort=sales_desc&status=pricing_issue&_pricingFixerStart=1";
+  const b2bFixerUrl = "https://sellercentral.amazon.de/myinventory/inventory?fulfilledBy=all&page=1&pageSize=250&sort=sales_desc&status=pricing_issue&ref_=xx_invmgr_favb_xx&_b2bFixerStart=1";
+  const dryRunStorageKey = "seller_extension_dry_run_v1";
+  const draftCsvModeKey = "seller_extension_draft_csv_mode_v1";
+  const draftProgressKey = "seller_extension_draft_progress_v1";
+  const marketCacheKey = "seller_extension_market_cache_v2";
+  const marketSelectionKey = "seller_extension_market_selection_v1";
+  const marketCacheTtlMs = 30 * 60 * 1000;
+
+
+  function setStatus(message) {
+    statusElement.textContent = message;
+  }
+
+  function setIbaScheduleStatus(message) {
+    ibaScheduleStatus.textContent = message;
+  }
+
+  function setDraftScheduleStatus(message) {
+    draftScheduleStatus.textContent = message;
+  }
+
+  function setDraftCollectionState(state) {
+    const active = state?.sessionActive === true;
+    draftCollectionStatus.textContent = active ? "Active" : "Inactive";
+    const pairsCount = Array.isArray(state?.skuMarketPairs) ? state.skuMarketPairs.length : 0;
+    const skusCount = Array.isArray(state?.uniqueSkus) ? state.uniqueSkus.length : 0;
+    draftCollectionCount.textContent = String(pairsCount || skusCount);
+    draftCollectionToggle.checked = active;
+  }
+
+  function setDryRunStatus(enabled) {
+    dryRunToggle.checked = enabled;
+  }
+
+  function setActiveView(viewName) {
+    const showingBookmarks = viewName === "bookmarks";
+    toolsView.classList.toggle("is-active", !showingBookmarks);
+    bookmarksView.classList.toggle("is-active", showingBookmarks);
+    toolsViewButton.classList.toggle("is-active", !showingBookmarks);
+    bookmarksViewButton.classList.toggle("is-active", showingBookmarks);
+  }
+
+  function setSectionExpanded(toggleElement, bodyElement, expanded) {
+    toggleElement.setAttribute("aria-expanded", String(expanded));
+    bodyElement.hidden = !expanded;
+  }
+
+  async function getActiveTab() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tabs[0] || null;
+  }
+
+  function canInjectIntoTab(url) {
+    return typeof url === "string" && (
+      /^https:\/\/sellercentral\.amazon\./.test(url) ||
+      /^https:\/\/expandoadmin\.retool\.com\//.test(url)
+    );
+  }
+
+  async function sendMessageToTab(tabId, message) {
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+
+  async function ensureContentScriptAndSend(tab, message) {
+    try {
+      return await sendMessageToTab(tab.id, message);
+    } catch (error) {
+      if (!canInjectIntoTab(tab.url) || !String(error?.message || "").includes("Receiving end does not exist")) {
+        throw error;
+      }
+
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"]
+      });
+
+      return sendMessageToTab(tab.id, message);
+    }
+  }
+
+  function formatScheduleMessage(config) {
+    if (!config?.enabled || !config?.time) {
+      return "Daily start is disabled.";
+    }
+
+    const nextRun = config.nextRun ? new Date(config.nextRun) : null;
+    const nextRunText = nextRun && !Number.isNaN(nextRun.getTime())
+      ? nextRun.toLocaleString()
+      : "pending";
+    return `Daily start is enabled for ${config.time}. Next run: ${nextRunText}.`;
+  }
+
+  function formatDraftScheduleMessage(config) {
+    if (!config?.enabled || !config?.intervalMinutes) {
+      return "Manual only";
+    }
+
+    const nextRun = config.nextRun ? new Date(config.nextRun) : null;
+    const nextRunText = nextRun && !Number.isNaN(nextRun.getTime())
+      ? nextRun.toLocaleString()
+      : "pending";
+    const emailText = config.selectedEmail ? ` for ${config.selectedEmail}` : "";
+    return `Every ${config.intervalMinutes} min${emailText}. Next run: ${nextRunText}.`;
+  }
+
+  async function loadIbaSchedule() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_IBA_SCHEDULE" });
+
+      if (!response?.success) {
+        setIbaScheduleStatus("Unable to load schedule.");
+        return;
+      }
+
+      ibaScheduleTimeInput.value = response.config?.time || "17:00";
+      setIbaScheduleStatus(formatScheduleMessage(response.config));
+    } catch (error) {
+      setIbaScheduleStatus(error.message || "Unable to load schedule.");
+    }
+  }
+
+  async function loadDraftSchedule() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_DRAFT_SCHEDULE" });
+
+      if (!response?.success) {
+        setDraftScheduleStatus("Unable to load schedule.");
+        return;
+      }
+
+      draftScheduleIntervalInput.value = String(response.config?.intervalMinutes || 30);
+
+      if (response.config?.selectedEmail) {
+        draftEmailSelect.value = response.config.selectedEmail;
+      }
+
+      setDraftScheduleStatus(formatDraftScheduleMessage(response.config));
+    } catch (error) {
+      setDraftScheduleStatus(error.message || "Unable to load schedule.");
+    }
+  }
+
+  async function loadDraftCollectionState() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_DRAFT_COLLECTION_STATE" });
+
+      if (!response?.success) {
+        setDraftCollectionState(null);
+        return;
+      }
+
+      setDraftCollectionState(response.state);
+    } catch {
+      setDraftCollectionState(null);
+    }
+  }
+
+  function downloadCsv(filename, contents) {
+    const blob = new Blob([contents], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function loadDryRunSetting() {
+    try {
+      const result = await chrome.storage.sync.get(dryRunStorageKey);
+      setDryRunStatus(result[dryRunStorageKey] === true);
+    } catch (error) {
+      setStatus(error.message || "Unable to load dry run setting.");
+    }
+  }
+
+  function isPendingMarket(r) {
+    return /pending/i.test(r?.label || "");
+  }
+
+  const DOMAIN_REGION_MAP = {
+    // Standardní domény
+    "sellercentral.amazon.de": "Europe",
+    "sellercentral.amazon.fr": "Europe",
+    "sellercentral.amazon.it": "Europe",
+    "sellercentral.amazon.es": "Europe",
+    "sellercentral.amazon.co.uk": "Europe",
+    "sellercentral.amazon.nl": "Europe",
+    "sellercentral.amazon.pl": "Europe",
+    "sellercentral.amazon.se": "Europe",
+    "sellercentral.amazon.com.be": "Europe",
+    "sellercentral.amazon.com.tr": "Europe",
+    "sellercentral.amazon.com": "North America",
+    "sellercentral.amazon.ca": "North America",
+    "sellercentral.amazon.com.mx": "North America",
+    "sellercentral.amazon.co.jp": "Asia Pacific",
+    "sellercentral.amazon.com.au": "Asia Pacific",
+    "sellercentral.amazon.sg": "Asia Pacific",
+    "sellercentral.amazon.in": "Asia Pacific",
+    "sellercentral.amazon.ae": "Middle East & Africa",
+    "sellercentral.amazon.com.sa": "Middle East & Africa",
+    "sellercentral.amazon.eg": "Middle East & Africa",
+    // Alternativní formáty domén (unified endpoint)
+    "sellercentral-europe.amazon.com": "Europe",
+    "sellercentral-japan.amazon.com": "Asia Pacific",
+    "sellercentral-na.amazon.com": "North America",
+    "sellercentral-fe.amazon.com": "Asia Pacific",
+  };
+
+  const MKID_REGION_MAP = {
+    "amzn1.mp.o.A28R8C7NBKEWEA": "Europe",
+    "amzn1.mp.o.AMEN7PMS3EDWL": "Europe",
+  };
+
+  // Fallback podle názvu země (když doména nesedí nebo chybí)
+  const LABEL_REGION_MAP = {
+    "germany": "Europe", "france": "Europe", "italy": "Europe", "spain": "Europe",
+    "united kingdom": "Europe", "netherlands": "Europe", "poland": "Europe",
+    "sweden": "Europe", "belgium": "Europe", "ireland": "Europe", "turkey": "Europe",
+    "czechia": "Europe", "czech republic": "Europe", "austria": "Europe",
+    "united states": "North America", "canada": "North America", "mexico": "North America",
+    "japan": "Asia Pacific", "australia": "Asia Pacific", "singapore": "Asia Pacific", "india": "Asia Pacific",
+    "uae": "Middle East & Africa", "united arab emirates": "Middle East & Africa",
+    "saudi arabia": "Middle East & Africa", "egypt": "Middle East & Africa",
+  };
+
+  const REGION_ORDER = ["Europe", "North America", "Asia Pacific", "Middle East & Africa", "Other"];
+
+  function getMarketRegion(r) {
+    const domain = r?.domain || "";
+    const mkid = r?.ids?.mons_sel_mkid || "";
+    const label = (r?.label || "").toLowerCase().trim();
+    return DOMAIN_REGION_MAP[domain] || MKID_REGION_MAP[mkid] || LABEL_REGION_MAP[label] || "Other";
+  }
+
+  function groupByRegion(markets) {
+    const groups = {};
+    markets.forEach((r) => {
+      const region = getMarketRegion(r);
+      if (!groups[region]) groups[region] = [];
+      groups[region].push(r);
+    });
+    return REGION_ORDER.filter((region) => groups[region]?.length > 0).map((region) => ({ region, markets: groups[region] }));
+  }
+
+  function updateMarketSelectionCount(sel) {
+    const count = Object.values(sel).filter(Boolean).length;
+    marketSelectionCountBadge.textContent = count;
+    marketSelectionCountBadge.style.display = count > 0 ? "" : "none";
+  }
+
+  function updateGroupHighlight(groupEl, sel) {
+    const nameSpan = groupEl.querySelector(".seller-group-name-label");
+    if (!nameSpan) return;
+    const hasChecked = [...groupEl.querySelectorAll("[data-market-key]")].some(
+      (el) => sel[el.getAttribute("data-market-key")] === true
+    );
+    nameSpan.style.color = hasChecked ? "#1d4ed8" : "";
+  }
+
+  function updateAllGroupHighlights(sel) {
+    marketList.querySelectorAll("[data-seller-group]").forEach((groupEl) => updateGroupHighlight(groupEl, sel));
+  }
+
+  function renderRegionSubgroup(region, markets, activeRegional, tabId, selection) {
+    const regionEl = document.createElement("div");
+    regionEl.setAttribute("data-region-group", region.toLowerCase());
+
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 10px 3px;background:#f9fafb;border-top:1px solid #e5e7eb;cursor:pointer;user-select:none;";
+
+    const allKeys = markets.map(marketKey);
+    const allChecked = allKeys.every((k) => selection[k] === true);
+    const someChecked = allKeys.some((k) => selection[k] === true);
+    const hasActive = markets.some((r) => isMarketActive(r, activeRegional));
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = allChecked;
+    cb.indeterminate = !allChecked && someChecked;
+    cb.style.cssText = "cursor:pointer;flex-shrink:0;accent-color:#3b82f6;";
+
+    const lbl = document.createElement("span");
+    lbl.style.cssText = "font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;flex:1;";
+    lbl.textContent = region;
+
+    const arrow = document.createElement("span");
+    arrow.style.cssText = "font-size:10px;color:#9ca3af;transition:transform 0.15s ease;display:inline-block;";
+    arrow.textContent = "▾";
+
+    const body = document.createElement("div");
+    // Expand the region that contains the active market; collapse others
+    body.hidden = !hasActive;
+    arrow.style.transform = hasActive ? "" : "rotate(-90deg)";
+
+    cb.addEventListener("change", async () => {
+      const checked = cb.checked;
+      const sel = await loadMarketSelection();
+      markets.forEach((r) => { sel[marketKey(r)] = checked; });
+      await saveMarketSelection(sel);
+      regionEl.querySelectorAll("[data-market-key] input[type=checkbox]").forEach((mcb) => { mcb.checked = checked; });
+      updateMarketSelectionCount(sel);
+      const groupEl = regionEl.closest("[data-seller-group]");
+      if (groupEl) updateGroupHighlight(groupEl, sel);
+    });
+
+    header.addEventListener("click", (e) => {
+      if (e.target === cb) return;
+      const collapsed = body.hidden;
+      body.hidden = !collapsed;
+      arrow.style.transform = collapsed ? "" : "rotate(-90deg)";
+    });
+
+    header.append(cb, lbl, arrow);
+    regionEl.appendChild(header);
+    markets.forEach((r) => body.appendChild(renderMarketItem(r, activeRegional, tabId, selection)));
+    regionEl.appendChild(body);
+    return regionEl;
+  }
+
+  async function loadDraftCsvMode() {
+    try {
+      const result = await chrome.storage.local.get(draftCsvModeKey);
+      return result[draftCsvModeKey] === true;
+    } catch { return false; }
+  }
+
+  function updateDraftModeLabel(csvMode) {
+    draftModeLabel.textContent = csvMode ? "Save to collection (export CSV)" : "Send to Retool (same tab)";
+    draftCsvModeToggle.checked = csvMode;
+  }
+
+  async function loadAndShowDraftProgress() {
+    try {
+      const result = await chrome.storage.local.get(draftProgressKey);
+      const progress = result[draftProgressKey];
+
+      if (!progress || typeof progress !== "object" || progress.done >= progress.total) {
+        draftProgressContainer.hidden = true;
+        return;
+      }
+
+      draftProgressContainer.hidden = false;
+      const pct = Math.round((progress.done / progress.total) * 100);
+      draftProgressFill.style.width = `${pct}%`;
+
+      const doneLabels = (progress.markets || []).filter((m) => m.done).map((m) => m.label).join(", ");
+      const pendingLabels = (progress.markets || []).filter((m) => !m.done).map((m) => m.label).join(", ");
+      draftProgressText.textContent = `${progress.done}/${progress.total} — Done: ${doneLabels || "—"} | Next: ${pendingLabels || "—"}`;
+    } catch { /* ignore */ }
+  }
+
+  async function startDraftScraping() {
+    const csvMode = draftCsvModeToggle.checked;
+    const skipRetool = csvMode;
+
+    setStatus(skipRetool ? "Starting (collection mode)..." : "Starting...");
+
+    try {
+      // Check if any markets are selected in Market Selector for multi-market run
+      const cached = await loadMarketCache();
+      const selection = await loadMarketSelection();
+      const hasSelection = cached && Object.values(selection).some(Boolean);
+
+      if (hasSelection) {
+        const tab = await getActiveTab();
+        if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+          setStatus("Open a Seller Central page first.");
+          return;
+        }
+
+        const selectedMarkets = [];
+        (cached.standaloneRegionalAccounts || []).forEach((r) => {
+          if (selection[marketKey(r)]) selectedMarkets.push(r);
+        });
+        (cached.globalAccounts || []).forEach((g) => {
+          (cached.regionalAccountsByGlobalId?.[g.id] || []).forEach((r) => {
+            if (selection[marketKey(r)]) selectedMarkets.push(r);
+          });
+        });
+
+        if (selectedMarkets.length === 0) {
+          setStatus("No markets selected.");
+          return;
+        }
+
+        const markets = selectedMarkets.map((r) => ({
+          mcid: r.ids?.mons_sel_dir_mcid || "",
+          mkid: r.ids?.mons_sel_mkid || "",
+          globalAccountId: r.globalAccountId || "",
+          domain: r.domain || "",
+          label: r.label || ""
+        }));
+
+        const parsedLimit = Number.parseInt(String(draftSkuLimitInput.value || "").trim(), 10);
+        const response = await chrome.runtime.sendMessage({
+          type: "START_MULTI_MARKET_DRAFT",
+          markets,
+          skipRetool,
+          selectedEmail: draftEmailSelect.value,
+          maxSkuCount: Number.isNaN(parsedLimit) ? null : parsedLimit,
+          tabId: tab.id
+        });
+
+        if (!response?.success) {
+          setStatus(response?.error || "Unable to start.");
+          return;
+        }
+
+        setStatus(`Running on ${markets.length} market(s): ${markets.map((m) => m.label).join(", ")}`);
+        void loadAndShowDraftProgress();
+        window.close();
+      } else {
+        // Single market (existing behavior)
+        const parsedLimit = Number.parseInt(String(draftSkuLimitInput.value || "").trim(), 10);
+        const response = await chrome.runtime.sendMessage({
+          type: "START_DRAFT_SCRAPING",
+          selectedEmail: draftEmailSelect.value,
+          maxSkuCount: Number.isNaN(parsedLimit) ? null : parsedLimit,
+          skipRetool
+        });
+
+        if (!response?.success) {
+          setStatus(response?.error || "Unable to start.");
+          return;
+        }
+
+        const limitText = draftSkuLimitInput.value ? ` / limit ${draftSkuLimitInput.value}` : "";
+        setStatus(`Starting for ${draftEmailSelect.value}${limitText}.`);
+        window.close();
+      }
+    } catch (error) {
+      setStatus(error.message || "Unexpected error.");
+    }
+  }
+
+  draftScrapingNoRetoolButton.addEventListener("click", startDraftScraping);
+
+  draftSectionToggle.addEventListener("click", () => {
+    const expanded = draftSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(draftSectionToggle, draftSectionBody, !expanded);
+  });
+
+  ibaSectionToggle.addEventListener("click", () => {
+    const expanded = ibaSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(ibaSectionToggle, ibaSectionBody, !expanded);
+  });
+
+  marketSectionToggle.addEventListener("click", () => {
+    const expanded = marketSectionToggle.getAttribute("aria-expanded") === "true";
+    const next = !expanded;
+    setSectionExpanded(marketSectionToggle, marketSectionBody, next);
+    if (next) void loadMarketData(false);
+  });
+
+  marketRefreshButton.addEventListener("click", () => {
+    void loadMarketData(true);
+  });
+
+  marketRunPricingButton.addEventListener("click", async () => {
+    const tab = await getActiveTab();
+    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+      setStatus("Open a Seller Central page first.");
+      return;
+    }
+
+    const cached = await loadMarketCache();
+    if (!cached) {
+      setStatus("Load markets first.");
+      return;
+    }
+
+    const selection = await loadMarketSelection();
+    const allMarkets = [];
+
+    (cached.standaloneRegionalAccounts || []).forEach((r) => {
+      if (selection[marketKey(r)]) allMarkets.push(r);
+    });
+
+    (cached.globalAccounts || []).forEach((g) => {
+      (cached.regionalAccountsByGlobalId?.[g.id] || []).forEach((r) => {
+        if (selection[marketKey(r)]) allMarkets.push(r);
+      });
+    });
+
+    if (allMarkets.length === 0) {
+      setStatus("Check at least one market first.");
+      return;
+    }
+
+    const markets = allMarkets.map((r) => ({
+      mcid: r.ids?.mons_sel_dir_mcid || "",
+      mkid: r.ids?.mons_sel_mkid || "",
+      globalAccountId: r.globalAccountId || "",
+      domain: r.domain || "",
+      label: r.label || ""
+    }));
+
+    setStatus(`Starting Pricing Fixer on ${markets.length} market(s)...`);
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "START_MULTI_MARKET_RUN",
+        markets,
+        scriptType: "pricing_fixer",
+        tabId: tab.id
+      });
+
+      if (!response?.success) {
+        setStatus(response?.error || "Failed to start.");
+        return;
+      }
+
+      setStatus(`Running on: ${markets.map((m) => m.label).join(" → ")}`);
+      window.close();
+    } catch (error) {
+      setStatus(error.message || "Error starting multi-market run.");
+    }
+  });
+
+  shippingTemplateSectionToggle.addEventListener("click", () => {
+    const expanded = shippingTemplateSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(shippingTemplateSectionToggle, shippingTemplateSectionBody, !expanded);
+  });
+
+  shippingTemplateTestButton.addEventListener("click", async () => {
+    const SHIPPING_TEMPLATE_TEST_CONFIG = {
+      templateName: "TEST TEMPLATE",
+      rateModel: "shipment_based",
+      ssaEnabled: false,
+      domesticShipping: {
+        "EU_STANDARD.DOMESTIC": {
+          enabled: true,
+          regions: [
+            {
+              // Region 0: Mainland Italy — countries omitted → keeps existing selection
+              transitTime: "5-7D",
+              pricing: {
+                model: "shipment_based",
+                pricePerOrder: 3.99,
+                unitPrice: 1.2,
+                unitMeasure: "Per Item"
+              }
+            },
+            {
+              // Region 1: Italian Islands — keep only Sardinia (ITM) + Sicily (ITN)
+              countries: ["ITM", "ITN"],
+              transitTime: "5-7D",
+              pricing: {
+                model: "shipment_based",
+                pricePerOrder: 3.99,
+                unitPrice: 1.2,
+                unitMeasure: "Per Item"
+              }
+            }
+          ]
+        }
+      },
+      internationalShipping: {}
+    };
+
+    const setST = (msg, isError = false) => {
+      shippingTemplateStatus.style.display = "";
+      shippingTemplateStatus.style.background = isError ? "#fee2e2" : "#f3f4f6";
+      shippingTemplateStatus.style.color = isError ? "#dc2626" : "";
+      shippingTemplateStatus.textContent = msg;
+    };
+
+    const tab = await getActiveTab();
+    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+      setST("Open a Seller Central page first.", true);
+      return;
+    }
+
+    shippingTemplateTestButton.disabled = true;
+    setST("Injecting automator...");
+
+    try {
+      // Step 1: inject the automator script file into the page
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["shipping_template_automator.js"]
+      });
+
+      setST("Running test automation...");
+
+      // Step 2: call the exposed global with the test config
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (config) => {
+          return window.__runShippingTemplateAutomation(config)
+            .then(() => ({ success: true }))
+            .catch((err) => ({ success: false, error: err?.message || String(err) }));
+        },
+        args: [SHIPPING_TEMPLATE_TEST_CONFIG]
+      });
+
+      if (result?.result?.success === false) {
+        setST(`Error: ${result.result.error}`, true);
+      } else {
+        setST("✓ Test automation started — check the page and DevTools console for progress.");
+      }
+    } catch (err) {
+      setST(`Failed: ${err.message || String(err)}`, true);
+    } finally {
+      shippingTemplateTestButton.disabled = false;
+    }
+  });
+
+  violationsSectionToggle.addEventListener("click", () => {
+    const expanded = violationsSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(violationsSectionToggle, violationsSectionBody, !expanded);
+  });
+
+  ibaAutomationButton.addEventListener("click", async () => {
+    setStatus("Starting...");
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (!tab?.id) {
+        setStatus("No active tab found.");
+        return;
+      }
+
+      try {
+        await ensureContentScriptAndSend(tab, { action: "IBA_START" });
+      } catch (error) {
+        if (!String(error?.message || "").includes("Receiving end does not exist")) {
+          throw error;
+        }
+
+        await chrome.tabs.create({
+          url: ibaStartUrl
+        });
+      }
+
+      setStatus("Opening IBA orders...");
+      window.close();
+    } catch (error) {
+      setStatus(error.message || "Unable to start.");
+    }
+  });
+
+  ibaScheduleSaveButton.addEventListener("click", async () => {
+    setIbaScheduleStatus("Saving schedule...");
+
+    try {
+      const time = ibaScheduleTimeInput.value || "17:00";
+      const response = await chrome.runtime.sendMessage({
+        type: "SAVE_IBA_SCHEDULE",
+        time
+      });
+
+      if (!response?.success) {
+        setIbaScheduleStatus(response?.error || "Unable to save schedule.");
+        return;
+      }
+
+      setIbaScheduleStatus(formatScheduleMessage(response.config));
+    } catch (error) {
+      setIbaScheduleStatus(error.message || "Unable to save schedule.");
+    }
+  });
+
+  ibaScheduleDisableButton.addEventListener("click", async () => {
+    setIbaScheduleStatus("Disabling schedule...");
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "DISABLE_IBA_SCHEDULE" });
+
+      if (!response?.success) {
+        setIbaScheduleStatus(response?.error || "Unable to disable schedule.");
+        return;
+      }
+
+      setIbaScheduleStatus(formatScheduleMessage(response.config));
+    } catch (error) {
+      setIbaScheduleStatus(error.message || "Unable to disable schedule.");
+    }
+  });
+
+  draftScheduleSaveButton.addEventListener("click", async () => {
+    setDraftScheduleStatus("Saving schedule...");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "SAVE_DRAFT_SCHEDULE",
+        intervalMinutes: draftScheduleIntervalInput.value,
+        selectedEmail: draftEmailSelect.value
+      });
+
+      if (!response?.success) {
+        setDraftScheduleStatus(response?.error || "Unable to save schedule.");
+        return;
+      }
+
+      setDraftScheduleStatus(formatDraftScheduleMessage(response.config));
+      setStatus("Draft interval schedule saved.");
+    } catch (error) {
+      setDraftScheduleStatus(error.message || "Unable to save schedule.");
+    }
+  });
+
+  draftScheduleDisableButton.addEventListener("click", async () => {
+    setDraftScheduleStatus("Disabling schedule...");
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "DISABLE_DRAFT_SCHEDULE" });
+
+      if (!response?.success) {
+        setDraftScheduleStatus(response?.error || "Unable to disable schedule.");
+        return;
+      }
+
+      setDraftScheduleStatus(formatDraftScheduleMessage(response.config));
+      setStatus("Draft interval schedule disabled.");
+    } catch (error) {
+      setDraftScheduleStatus(error.message || "Unable to disable schedule.");
+    }
+  });
+
+  draftCollectionExportButton.addEventListener("click", async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_DRAFT_COLLECTION_STATE" });
+
+      if (!response?.success) {
+        setStatus(response?.error || "Unable to export collection.");
+        return;
+      }
+
+      const pairs = Array.isArray(response.state?.skuMarketPairs) ? response.state.skuMarketPairs : [];
+      // Fallback: if skuMarketPairs not yet available, use uniqueSkus
+      const rows = pairs.length > 0
+        ? pairs
+        : (Array.isArray(response.state?.uniqueSkus) ? response.state.uniqueSkus.map((sku) => ({ sku, market: "" })) : []);
+
+      if (rows.length === 0) {
+        setStatus("No collected SKUs to export.");
+        return;
+      }
+
+      const csvLines = ["sku,market", ...rows.map((p) => `${p.sku},${p.market || ""}`)];
+      const datePart = new Date().toISOString().slice(0, 10);
+      downloadCsv(`draft-collected-skus-${datePart}.csv`, csvLines.join("\n"));
+      setStatus(`Exported ${rows.length} unique SKUs.`);
+    } catch (error) {
+      setStatus(error.message || "Unable to export collection.");
+    }
+  });
+
+  draftCollectionResetButton.addEventListener("click", async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "RESET_DRAFT_COLLECTION_STATE" });
+
+      if (!response?.success) {
+        setStatus(response?.error || "Unable to reset collection.");
+        return;
+      }
+
+      setDraftCollectionState(response.state);
+      setStatus("Draft collection reset.");
+    } catch (error) {
+      setStatus(error.message || "Unable to reset collection.");
+    }
+  });
+
+  draftCollectionToggle.addEventListener("change", async (event) => {
+    const active = event.target.checked;
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: active ? "START_DRAFT_COLLECTION_SESSION" : "STOP_DRAFT_COLLECTION_SESSION",
+        selectedEmail: draftEmailSelect.value
+      });
+      if (!response?.success) {
+        setStatus(response?.error || "Unable to toggle collection.");
+        draftCollectionToggle.checked = !active;
+        return;
+      }
+      setDraftCollectionState(response.state);
+      setStatus(active ? "Collection session started." : "Collection session stopped.");
+    } catch (error) {
+      setStatus(error.message || "Unable to toggle collection.");
+      draftCollectionToggle.checked = !active;
+    }
+  });
+
+  draftCsvModeToggle.addEventListener("change", async (event) => {
+    const csvMode = event.target.checked;
+    try {
+      await chrome.storage.local.set({ [draftCsvModeKey]: csvMode });
+      updateDraftModeLabel(csvMode);
+    } catch (error) {
+      setStatus(error.message || "Unable to save mode.");
+    }
+  });
+
+  violationsScheduleSaveButton.addEventListener("click", () => {
+    violationsScheduleStatus.textContent = "Scheduling not available yet";
+    setStatus("Violations daily schedule is not implemented yet.");
+  });
+
+  dryRunToggle.addEventListener("change", async (event) => {
+    const enabled = event.target.checked;
+
+    try {
+      await chrome.storage.sync.set({
+        [dryRunStorageKey]: enabled
+      });
+      setDryRunStatus(enabled);
+      setStatus(enabled ? "Dry run enabled." : "Dry run disabled.");
+    } catch (error) {
+      setStatus(error.message || "Unable to save dry run setting.");
+      await loadDryRunSetting();
+    }
+  });
+
+  // ── Market cache & selection helpers ──────────────────────────────────────
+
+  async function loadMarketCache() {
+    try {
+      const result = await chrome.storage.local.get(marketCacheKey);
+      const entry = result[marketCacheKey];
+      if (entry && typeof entry === "object" && entry.cachedAt && Date.now() - entry.cachedAt < marketCacheTtlMs) {
+        return entry.data;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  async function saveMarketCache(data) {
+    try {
+      await chrome.storage.local.set({ [marketCacheKey]: { data, cachedAt: Date.now() } });
+    } catch { /* ignore */ }
+  }
+
+  async function loadMarketSelection() {
+    try {
+      const result = await chrome.storage.local.get(marketSelectionKey);
+      return result[marketSelectionKey] || {};
+    } catch { return {}; }
+  }
+
+  async function saveMarketSelection(selection) {
+    try {
+      await chrome.storage.local.set({ [marketSelectionKey]: selection });
+    } catch { /* ignore */ }
+  }
+
+  function marketKey(r) {
+    return `${r?.ids?.mons_sel_dir_mcid || ""}::${r?.ids?.mons_sel_mkid || ""}`;
+  }
+
+  function buildMarketSwitchUrl(regionalAccount) {
+    const domain = regionalAccount?.domain || "sellercentral.amazon.de";
+    const mkid = regionalAccount?.ids?.mons_sel_mkid || "";
+    const mcid = regionalAccount?.ids?.mons_sel_dir_mcid || "";
+    const globalAccountId = regionalAccount?.globalAccountId || "";
+    const url = new URL(`https://${domain}/home`);
+    url.searchParams.set("mons_sel_mkid", mkid);
+    url.searchParams.set("mons_sel_dir_mcid", mcid);
+    if (globalAccountId) url.searchParams.set("mons_sel_dir_paid", globalAccountId);
+    url.searchParams.set("ignore_selection_changed", "true");
+    return url.toString();
+  }
+
+  function isMarketActive(r, activeRegional) {
+    return r?.ids?.mons_sel_mkid === activeRegional?.ids?.mons_sel_mkid &&
+      r?.ids?.mons_sel_dir_mcid === activeRegional?.ids?.mons_sel_dir_mcid;
+  }
+
+  function renderMarketItem(r, activeRegional, tabId, selection) {
+    const active = isMarketActive(r, activeRegional);
+    const key = marketKey(r);
+
+    const wrapper = document.createElement("div");
+    wrapper.setAttribute("data-market-label", `${r.label || ""} ${r.domain || ""}`.toLowerCase());
+    wrapper.setAttribute("data-market-key", key);
+    wrapper.style.display = "flex";
+    wrapper.style.alignItems = "center";
+    wrapper.style.gap = "8px";
+    wrapper.style.padding = "8px 10px";
+    wrapper.style.borderTop = "1px solid #e5e7eb";
+    wrapper.style.background = active ? "#eff6ff" : "#fff";
+
+    // Checkbox for multi-market selection
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selection[key] === true;
+    checkbox.style.cursor = "pointer";
+    checkbox.style.flexShrink = "0";
+    checkbox.addEventListener("change", async () => {
+      const sel = await loadMarketSelection();
+      sel[key] = checkbox.checked;
+      await saveMarketSelection(sel);
+      updateMarketSelectionCount(sel);
+      const groupEl = wrapper.closest("[data-seller-group]");
+      if (groupEl) updateGroupHighlight(groupEl, sel);
+    });
+
+    // Label (click switches market)
+    const label = document.createElement("button");
+    label.type = "button";
+    label.style.flex = "1";
+    label.style.display = "flex";
+    label.style.alignItems = "center";
+    label.style.justifyContent = "space-between";
+    label.style.gap = "8px";
+    label.style.background = "transparent";
+    label.style.border = "0";
+    label.style.padding = "0";
+    label.style.cursor = active ? "default" : "pointer";
+    label.style.color = active ? "#1d4ed8" : "#111827";
+    label.style.fontWeight = active ? "600" : "normal";
+    label.style.fontSize = "13px";
+    label.style.textAlign = "left";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.style.overflow = "hidden";
+    nameSpan.style.textOverflow = "ellipsis";
+    nameSpan.style.whiteSpace = "nowrap";
+    nameSpan.textContent = r.label || "Unnamed";
+
+    const domainBadge = document.createElement("span");
+    domainBadge.style.fontSize = "11px";
+    domainBadge.style.color = active ? "#1d4ed8" : "#6b7280";
+    domainBadge.style.flexShrink = "0";
+    domainBadge.textContent = r.domain || "";
+
+    label.append(nameSpan, domainBadge);
+
+    if (!active) {
+      label.addEventListener("click", async () => {
+        await chrome.tabs.update(tabId, { url: buildMarketSwitchUrl(r) });
+        window.close();
+      });
+    }
+
+    wrapper.append(checkbox, label);
+    return wrapper;
+  }
+
+  function applyMarketSearch() {
+    const q = (marketSearchInput.value || "").toLowerCase().trim();
+
+    // Seller groups
+    marketList.querySelectorAll("[data-seller-group]").forEach((groupEl) => {
+      const sellerName = groupEl.getAttribute("data-seller-group") || "";
+      const sellerMatches = !q || sellerName.includes(q);
+
+      if (sellerMatches) {
+        groupEl.style.display = "";
+        groupEl.querySelectorAll("[data-region-group]").forEach((rg) => { rg.style.display = ""; });
+        groupEl.querySelectorAll("[data-market-label]").forEach((el) => { el.style.display = ""; });
+      } else {
+        let groupHasVisible = false;
+        groupEl.querySelectorAll("[data-region-group]").forEach((rg) => {
+          let regionHasVisible = false;
+          rg.querySelectorAll("[data-market-label]").forEach((el) => {
+            const label = el.getAttribute("data-market-label") || "";
+            const visible = label.includes(q);
+            el.style.display = visible ? "" : "none";
+            if (visible) regionHasVisible = true;
+          });
+          rg.style.display = regionHasVisible ? "" : "none";
+          if (regionHasVisible) groupHasVisible = true;
+        });
+        groupEl.style.display = groupHasVisible ? "" : "none";
+      }
+    });
+
+    // Standalone markets (direct children, not inside a seller group)
+    marketList.querySelectorAll(":scope > [data-market-label]").forEach((el) => {
+      const label = el.getAttribute("data-market-label") || "";
+      el.style.display = !q || label.includes(q) ? "" : "none";
+    });
+  }
+
+  marketSearchInput.addEventListener("input", applyMarketSearch);
+
+  function renderMarketList(data, tabId, selection) {
+    marketList.innerHTML = "";
+    const activeRegional = data.current?.regionalAccount || null;
+    const standalone = (data.standaloneRegionalAccounts || []).filter((r) => !isPendingMarket(r));
+    const globals = data.globalAccounts || [];
+
+    standalone.forEach((r) => {
+      marketList.appendChild(renderMarketItem(r, activeRegional, tabId, selection));
+    });
+
+    globals.forEach((globalAccount) => {
+      const group = document.createElement("div");
+      group.style.border = "1px solid #e5e7eb";
+      group.style.borderRadius = "8px";
+      group.style.overflow = "hidden";
+      group.style.marginBottom = "6px";
+      group.style.background = "#fff";
+
+      const markets = (data.regionalAccountsByGlobalId?.[globalAccount.id] || []).filter((r) => !isPendingMarket(r));
+      if (markets.length === 0) return;
+      const hasActive = markets.some((r) => isMarketActive(r, activeRegional));
+
+      group.setAttribute("data-seller-group", (globalAccount.label || "").toLowerCase());
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.style.cssText = "display:flex;align-items:center;justify-content:space-between;width:100%;padding:9px 10px;background:#f9fafb;border:0;border-bottom:1px solid #e5e7eb;font-size:13px;font-weight:600;cursor:pointer;";
+      toggle.setAttribute("aria-expanded", String(hasActive));
+      toggle.innerHTML = `<span class="seller-group-name-label">${globalAccount.label || "Unnamed seller"}</span><span style="font-size:11px;color:#6b7280;">&#9662;</span>`;
+
+      const body = document.createElement("div");
+      body.hidden = !hasActive;
+      const regionGroups = groupByRegion(markets);
+      regionGroups.forEach(({ region, markets: rMarkets }) => {
+        body.appendChild(renderRegionSubgroup(region, rMarkets, activeRegional, tabId, selection));
+      });
+
+      toggle.addEventListener("click", () => {
+        const next = toggle.getAttribute("aria-expanded") !== "true";
+        toggle.setAttribute("aria-expanded", String(next));
+        body.hidden = !next;
+      });
+
+      group.append(toggle, body);
+      marketList.appendChild(group);
+    });
+
+    updateMarketSelectionCount(selection);
+    updateAllGroupHighlights(selection);
+  }
+
+  async function loadMarketData(forceRefresh = false) {
+    marketCurrentLabel.textContent = "Loading...";
+    marketList.innerHTML = "";
+
+    const tab = await getActiveTab();
+
+    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+      marketCurrentLabel.textContent = "—";
+      setStatus("Open a Seller Central page first.");
+      return;
+    }
+
+    let data = forceRefresh ? null : await loadMarketCache();
+
+    if (!data) {
+      try {
+        const response = await ensureContentScriptAndSend(tab, { action: "GET_MARKET_DATA" });
+        if (!response?.success) {
+          marketCurrentLabel.textContent = "—";
+          setStatus(response?.error || "Failed to load markets.");
+          return;
+        }
+        data = response.data;
+        await saveMarketCache(data);
+      } catch (error) {
+        marketCurrentLabel.textContent = "—";
+        setStatus(error.message || "Error loading markets.");
+        return;
+      }
+    }
+
+    const current = data.current?.regionalAccount?.label || "—";
+    marketCurrentLabel.textContent = `Current: ${current}`;
+    const selection = await loadMarketSelection();
+    renderMarketList(data, tab.id, selection);
+    applyMarketSearch();
+  }
+
+
+  document.getElementById("violationsButton").addEventListener("click", async () => {
+    setStatus("Starting...");
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "START_VIOLATIONS_EXPORT" });
+
+      if (!response?.success) {
+        setStatus(response?.error || "Unable to start.");
+        return;
+      }
+
+      setStatus("Opening violations tab...");
+      window.close();
+    } catch (error) {
+      setStatus(error.message || "Unexpected error.");
+    }
+  });
+
+  pricingFixerButton.addEventListener("click", async () => {
+    setStatus("Opening Pricing Issue Fixer...");
+
+    try {
+      const tab = await getActiveTab();
+
+      if (tab?.id && /^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+        await ensureContentScriptAndSend(tab, { action: "PRICING_FIXER_START" });
+      } else {
+        await chrome.tabs.create({ url: pricingFixerUrl });
+      }
+
+      setStatus("Pricing Issue Fixer started.");
+      window.close();
+    } catch (error) {
+      setStatus(error.message || "Unable to start Pricing Issue Fixer.");
+    }
+  });
+
+  b2bFixerButton.addEventListener("click", async () => {
+    setStatus("Opening B2B Price Fixer...");
+
+    try {
+      const tab = await getActiveTab();
+
+      if (tab?.id && /^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+        await ensureContentScriptAndSend(tab, { action: "B2B_FIXER_START" });
+      } else {
+        await chrome.tabs.create({ url: b2bFixerUrl });
+      }
+
+      setStatus("B2B Price Fixer started.");
+      window.close();
+    } catch (error) {
+      setStatus(error.message || "Unable to start B2B Price Fixer.");
+    }
+  });
+
+  draftStopButton.addEventListener("click", async () => {
+    setStatus("Stopping...");
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "STOP_DRAFT_SCRAPING" });
+
+      if (!response?.success) {
+        setStatus(response?.error || "Unable to stop.");
+        return;
+      }
+
+      setStatus("Stopped.");
+      window.close();
+    } catch (error) {
+      setStatus(error.message || "Unexpected error.");
+    }
+  });
+
+  ibaStopButton.addEventListener("click", () => {
+    setStatus("IBA stop is not implemented yet.");
+  });
+
+  violationsStopButton.addEventListener("click", () => {
+    setStatus("Violations stop is not implemented yet.");
+  });
+
+  toolsViewButton.addEventListener("click", () => {
+    setActiveView("tools");
+  });
+
+  bookmarksViewButton.addEventListener("click", () => {
+    setActiveView("bookmarks");
+  });
+
+  const SCBookmarks = (() => {
+    const STORAGE_KEY = "sc_bookmarks_v1";
+    const COLORS = ["#FF9900", "#232f3e", "#0f766e", "#2563eb", "#7c3aed", "#dc2626"];
+
+    const state = {
+      bookmarks: [],
+      searchTerm: "",
+      categoryFilter: "all",
+      collapsedGroups: new Set(),
+      editingId: null,
+      selectedColor: COLORS[0]
+    };
+
+    const elements = {
+      list: document.getElementById("bookmarksList"),
+      addButton: document.getElementById("bookmarkCurrentPageButton"),
+      searchInput: document.getElementById("bookmarkSearchInput"),
+      categoryFilter: document.getElementById("bookmarkCategoryFilter"),
+      categoryOptions: document.getElementById("bookmarkCategoryOptions"),
+      modal: document.getElementById("bookmarkModal"),
+      modalTitle: document.getElementById("bookmarkModalTitle"),
+      modalCloseButton: document.getElementById("bookmarkModalCloseButton"),
+      cancelButton: document.getElementById("bookmarkCancelButton"),
+      form: document.getElementById("bookmarkForm"),
+      nameInput: document.getElementById("bookmarkNameInput"),
+      urlInput: document.getElementById("bookmarkUrlInput"),
+      categoryInput: document.getElementById("bookmarkCategoryInput"),
+      noteInput: document.getElementById("bookmarkNoteInput"),
+      colorPicker: document.getElementById("bookmarkColorPicker"),
+      toastStack: document.getElementById("bookmarkToastStack")
+    };
+
+    function generateId() {
+      return `bookmark_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function sanitizeBookmark(rawBookmark) {
+      return {
+        id: rawBookmark.id || generateId(),
+        name: (rawBookmark.name || "Untitled bookmark").trim(),
+        url: (rawBookmark.url || "").trim(),
+        category: (rawBookmark.category || "Uncategorized").trim() || "Uncategorized",
+        note: (rawBookmark.note || "").trim(),
+        color: COLORS.includes(rawBookmark.color) ? rawBookmark.color : COLORS[0],
+        createdAt: rawBookmark.createdAt || new Date().toISOString(),
+        updatedAt: rawBookmark.updatedAt || new Date().toISOString()
+      };
+    }
+
+    async function loadBookmarks() {
+      const result = await chrome.storage.sync.get(STORAGE_KEY);
+      const bookmarks = Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
+      state.bookmarks = bookmarks.map(sanitizeBookmark);
+      render();
+    }
+
+    async function persistBookmarks() {
+      await chrome.storage.sync.set({ [STORAGE_KEY]: state.bookmarks });
+    }
+
+    function getSortedCategories() {
+      return [...new Set(state.bookmarks.map((bookmark) => bookmark.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    }
+
+    function showToast(message) {
+      const toast = document.createElement("div");
+      toast.className = "sc-bookmarks-toast";
+      toast.textContent = message;
+      elements.toastStack.appendChild(toast);
+
+      setTimeout(() => {
+        toast.remove();
+      }, 2400);
+    }
+
+    async function getCurrentTabBookmarkDefaults() {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (!tab?.url || !/^https:\/\/sellercentral\.amazon\./.test(tab.url)) {
+        throw new Error("Open a Seller Central page before saving a bookmark.");
+      }
+
+      return {
+        name: tab.title || "Seller Central Page",
+        url: tab.url,
+        category: "Quick Saves",
+        note: "",
+        color: COLORS[0]
+      };
+    }
+
+    function openModal(bookmark) {
+      state.editingId = bookmark?.id || null;
+      state.selectedColor = bookmark?.color || COLORS[0];
+
+      elements.modalTitle.textContent = bookmark ? "Edit Bookmark" : "Add Bookmark";
+      elements.nameInput.value = bookmark?.name || "";
+      elements.urlInput.value = bookmark?.url || "";
+      elements.categoryInput.value = bookmark?.category || "";
+      elements.noteInput.value = bookmark?.note || "";
+      renderColorPicker();
+      elements.modal.hidden = false;
+      elements.nameInput.focus();
+      elements.nameInput.select();
+    }
+
+    function closeModal() {
+      elements.modal.hidden = true;
+      state.editingId = null;
+      elements.form.reset();
+      state.selectedColor = COLORS[0];
+      renderColorPicker();
+    }
+
+    function updateCategoryControls() {
+      const categories = getSortedCategories();
+      elements.categoryFilter.innerHTML = '<option value="all">All categories</option>';
+      elements.categoryOptions.innerHTML = "";
+
+      categories.forEach((category) => {
+        const selectOption = document.createElement("option");
+        selectOption.value = category;
+        selectOption.textContent = category;
+        elements.categoryFilter.appendChild(selectOption);
+
+        const dataOption = document.createElement("option");
+        dataOption.value = category;
+        elements.categoryOptions.appendChild(dataOption);
+      });
+
+      if (!categories.includes(state.categoryFilter)) {
+        state.categoryFilter = "all";
+      }
+
+      elements.categoryFilter.value = state.categoryFilter;
+    }
+
+    function matchesFilters(bookmark) {
+      const searchTarget = `${bookmark.name} ${bookmark.url} ${bookmark.note}`.toLowerCase();
+      const matchesSearch = !state.searchTerm || searchTarget.includes(state.searchTerm);
+      const matchesCategory = state.categoryFilter === "all" || bookmark.category === state.categoryFilter;
+      return matchesSearch && matchesCategory;
+    }
+
+    function getFilteredBookmarks() {
+      return state.bookmarks
+        .filter(matchesFilters)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    function groupBookmarks(bookmarks) {
+      const grouped = new Map();
+
+      bookmarks.forEach((bookmark) => {
+        const category = bookmark.category || "Uncategorized";
+
+        if (!grouped.has(category)) {
+          grouped.set(category, []);
+        }
+
+        grouped.get(category).push(bookmark);
+      });
+
+      return [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    }
+
+    function renderColorPicker() {
+      elements.colorPicker.innerHTML = "";
+
+      COLORS.forEach((color) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "sc-bookmarks-color-option";
+        button.style.background = color;
+        button.dataset.color = color;
+        button.setAttribute("aria-label", `Select color ${color}`);
+
+        if (color === state.selectedColor) {
+          button.classList.add("is-selected");
+        }
+
+        button.addEventListener("click", () => {
+          state.selectedColor = color;
+          renderColorPicker();
+        });
+
+        elements.colorPicker.appendChild(button);
+      });
+    }
+
+    function createBookmarkCard(bookmark) {
+      const card = document.createElement("article");
+      card.className = "sc-bookmarks-card";
+      card.style.borderLeftColor = bookmark.color;
+
+      const favicon = document.createElement("img");
+      favicon.className = "sc-bookmarks-favicon";
+      favicon.alt = "";
+      favicon.src = `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(bookmark.url)}&sz=64`;
+
+      const main = document.createElement("div");
+      main.className = "sc-bookmarks-card-main";
+
+      const link = document.createElement("a");
+      link.className = "sc-bookmarks-card-link";
+      link.href = "#";
+      link.textContent = bookmark.name;
+      link.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await chrome.tabs.create({ url: bookmark.url });
+      });
+
+      const url = document.createElement("div");
+      url.className = "sc-bookmarks-card-url";
+      url.textContent = bookmark.url;
+
+      main.append(link, url);
+
+      if (bookmark.note) {
+        const note = document.createElement("div");
+        note.className = "sc-bookmarks-card-note";
+        note.textContent = bookmark.note;
+        main.appendChild(note);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "sc-bookmarks-card-actions";
+
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "sc-bookmarks-action";
+      editButton.textContent = "Edit";
+      editButton.addEventListener("click", () => {
+        openModal(bookmark);
+      });
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "sc-bookmarks-action is-danger";
+      deleteButton.textContent = "Delete";
+      deleteButton.addEventListener("click", async () => {
+        const confirmed = window.confirm(`Delete bookmark "${bookmark.name}"?`);
+
+        if (!confirmed) {
+          return;
+        }
+
+        state.bookmarks = state.bookmarks.filter((item) => item.id !== bookmark.id);
+        await persistBookmarks();
+        render();
+        showToast("Bookmark deleted");
+      });
+
+      actions.append(editButton, deleteButton);
+      card.append(favicon, main, actions);
+      return card;
+    }
+
+    function renderEmptyState() {
+      elements.list.innerHTML = `
+        <div class="sc-bookmarks-empty">
+          <div class="sc-bookmarks-empty-illustration">&#128278;</div>
+          <div>No bookmarks yet.<br>Save your current Seller Central page to start.</div>
+        </div>
+      `;
+    }
+
+    function render() {
+      updateCategoryControls();
+      const filteredBookmarks = getFilteredBookmarks();
+
+      if (filteredBookmarks.length === 0) {
+        renderEmptyState();
+        return;
+      }
+
+      elements.list.innerHTML = "";
+
+      groupBookmarks(filteredBookmarks).forEach(([category, bookmarks]) => {
+        const group = document.createElement("section");
+        group.className = "sc-bookmarks-group";
+
+        const header = document.createElement("button");
+        header.type = "button";
+        header.className = "sc-bookmarks-group-header";
+        const expanded = !state.collapsedGroups.has(category);
+        header.setAttribute("aria-expanded", String(expanded));
+        header.innerHTML = `
+          <span class="sc-bookmarks-group-title">
+            <span class="sc-bookmarks-group-arrow">&#9654;</span>
+            <span>${category}</span>
+          </span>
+          <span class="sc-bookmarks-group-badge">${bookmarks.length}</span>
+        `;
+        header.addEventListener("click", () => {
+          if (state.collapsedGroups.has(category)) {
+            state.collapsedGroups.delete(category);
+          } else {
+            state.collapsedGroups.add(category);
+          }
+
+          render();
+        });
+
+        group.appendChild(header);
+
+        if (expanded) {
+          const items = document.createElement("div");
+          items.className = "sc-bookmarks-group-items";
+          bookmarks.forEach((bookmark) => {
+            items.appendChild(createBookmarkCard(bookmark));
+          });
+          group.appendChild(items);
+        }
+
+        elements.list.appendChild(group);
+      });
+    }
+
+    async function saveFromForm() {
+      const bookmark = sanitizeBookmark({
+        id: state.editingId || generateId(),
+        name: elements.nameInput.value,
+        url: elements.urlInput.value,
+        category: elements.categoryInput.value,
+        note: elements.noteInput.value,
+        color: state.selectedColor,
+        createdAt: state.bookmarks.find((item) => item.id === state.editingId)?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+
+      if (!bookmark.url) {
+        throw new Error("URL is required.");
+      }
+
+      try {
+        new URL(bookmark.url);
+      } catch {
+        throw new Error("Enter a valid URL.");
+      }
+
+      const existingIndex = state.bookmarks.findIndex((item) => item.id === bookmark.id);
+
+      if (existingIndex >= 0) {
+        state.bookmarks.splice(existingIndex, 1, bookmark);
+      } else {
+        state.bookmarks.unshift(bookmark);
+      }
+
+      await persistBookmarks();
+      render();
+      closeModal();
+      showToast(existingIndex >= 0 ? "Bookmark updated" : "Bookmark saved");
+    }
+
+    function bindEvents() {
+      elements.addButton.addEventListener("click", async () => {
+        try {
+          const defaults = await getCurrentTabBookmarkDefaults();
+          openModal(defaults);
+        } catch (error) {
+          showToast(error.message || "Unable to use the current page.");
+        }
+      });
+
+      elements.searchInput.addEventListener("input", (event) => {
+        state.searchTerm = event.target.value.trim().toLowerCase();
+        render();
+      });
+
+      elements.categoryFilter.addEventListener("change", (event) => {
+        state.categoryFilter = event.target.value;
+        render();
+      });
+
+      elements.modalCloseButton.addEventListener("click", closeModal);
+      elements.cancelButton.addEventListener("click", closeModal);
+
+      elements.modal.addEventListener("click", (event) => {
+        if (event.target === elements.modal) {
+          closeModal();
+        }
+      });
+
+      elements.form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        try {
+          await saveFromForm();
+        } catch (error) {
+          showToast(error.message || "Unable to save bookmark.");
+        }
+      });
+
+      document.addEventListener("keydown", async (event) => {
+        if (elements.modal.hidden) {
+          return;
+        }
+
+        if (event.key === "Escape") {
+          closeModal();
+          return;
+        }
+
+        if (event.key === "Enter" && event.target !== elements.noteInput) {
+          event.preventDefault();
+
+          try {
+            await saveFromForm();
+          } catch (error) {
+            showToast(error.message || "Unable to save bookmark.");
+          }
+        }
+      });
+    }
+
+    async function init() {
+      bindEvents();
+      renderColorPicker();
+      await loadBookmarks();
+    }
+
+    return { init };
+  })();
+
+  void SCBookmarks.init();
+
+  (async () => {
+    const tab = await getActiveTab();
+    const onSC = typeof tab?.url === "string" && /sellercentral\.amazon/.test(tab.url);
+    if (!onSC) {
+      notScPanel.removeAttribute("hidden");
+      notScPanel.style.display = "flex";
+      toolsPanel.style.display = "none";
+      return;
+    }
+
+    setSectionExpanded(draftSectionToggle, draftSectionBody, true);
+    setSectionExpanded(ibaSectionToggle, ibaSectionBody, false);
+    setSectionExpanded(marketSectionToggle, marketSectionBody, false);
+    setSectionExpanded(violationsSectionToggle, violationsSectionBody, false);
+    setSectionExpanded(shippingTemplateSectionToggle, shippingTemplateSectionBody, false);
+    void loadDryRunSetting();
+    void loadIbaSchedule();
+    void loadDraftSchedule();
+    void loadDraftCollectionState();
+    void loadAndShowDraftProgress();
+    void loadDraftCsvMode().then(updateDraftModeLabel);
+  })();
+})();

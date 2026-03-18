@@ -1,0 +1,1104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Seller Tools</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, system-ui, sans-serif;
+      --sc-primary: #3B82F6;
+      --sc-primary-hover: #2563EB;
+      --sc-bg: #F7F8FA;
+      --sc-card: #FFFFFF;
+      --sc-border: #D8DEE8;
+      --sc-text: #111827;
+      --sc-muted: #4B5563;
+      --sc-success-bg: #ECFDF5;
+      --sc-success-text: #047857;
+      --sc-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 340px;
+      min-height: 420px;
+      margin: 0;
+      padding: 16px;
+      background: var(--sc-bg);
+      color: var(--sc-text);
+    }
+
+    h1,
+    h2,
+    p {
+      margin: 0;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      border: none;
+      cursor: pointer;
+      transition: background 0.16s ease, transform 0.12s ease, opacity 0.16s ease;
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    .popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .popup-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    .popup-nav {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .popup-nav-button {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--sc-muted);
+      font-size: 18px;
+      line-height: 1;
+      opacity: 0.6;
+    }
+
+    .popup-nav-button:hover {
+      background: transparent;
+      opacity: 1;
+    }
+
+    .popup-view {
+      display: none;
+    }
+
+    .popup-view.is-active {
+      display: block;
+    }
+
+    .tools-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .tool-card {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px;
+      border: 1px solid var(--sc-border);
+      border-radius: 10px;
+      background: var(--sc-card);
+      box-shadow: var(--sc-shadow);
+    }
+
+    .tool-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .tool-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--sc-primary);
+      font-size: 16px;
+      opacity: 0.7;
+      flex: none;
+    }
+
+    .tool-card-title {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--sc-text);
+    }
+
+    .tool-card-description,
+    .tool-label,
+    .tool-status {
+      font-size: 14px;
+      color: var(--sc-muted);
+      line-height: 1.4;
+    }
+
+    .tool-label {
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    .primary-button {
+      width: 100%;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--sc-primary);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .primary-button:hover {
+      background: var(--sc-primary-hover);
+    }
+
+    .secondary-button {
+      height: 32px;
+      padding: 0 12px;
+      border-radius: 8px;
+      background: #E5E7EB;
+      color: var(--sc-text);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .secondary-button:hover {
+      background: #D1D5DB;
+    }
+
+    .danger-button {
+      width: 100%;
+      height: 36px;
+      border-radius: 8px;
+      background: #DC2626;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .danger-button:hover {
+      background: #B91C1C;
+    }
+
+    .tool-select,
+    .tool-input,
+    .sc-bookmarks-input,
+    .sc-bookmarks-select,
+    .sc-bookmarks-textarea {
+      width: 100%;
+      height: 32px;
+      padding: 0 10px;
+      border: 1px solid #D1D5DB;
+      border-radius: 8px;
+      background: #fff;
+      color: var(--sc-text);
+      outline: none;
+    }
+
+    .tool-select:focus,
+    .tool-input:focus,
+    .sc-bookmarks-input:focus,
+    .sc-bookmarks-select:focus,
+    .sc-bookmarks-textarea:focus {
+      border-color: var(--sc-primary);
+    }
+
+    .tool-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .tool-input-row .tool-input,
+    .tool-input-row .sc-bookmarks-input {
+      flex: 1;
+    }
+
+    .tool-inline-action {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .tool-success {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: var(--sc-success-bg);
+      color: var(--sc-success-text);
+      font-size: 12px;
+    }
+
+    .tool-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .market-switcher-state {
+      font-size: 13px;
+      color: var(--sc-muted);
+      line-height: 1.4;
+    }
+
+    .market-switcher-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .market-switcher-group {
+      border: 1px solid var(--sc-border);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .market-switcher-group-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 10px 12px;
+      background: #fff;
+      color: var(--sc-text);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .market-switcher-group-toggle:hover {
+      background: #F9FAFB;
+    }
+
+    .market-switcher-group-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .market-switcher-group-arrow {
+      font-size: 13px;
+      color: var(--sc-muted);
+      transition: transform 0.16s ease;
+    }
+
+    .market-switcher-group-toggle[aria-expanded="true"] .market-switcher-group-arrow {
+      transform: rotate(180deg);
+    }
+
+    .market-switcher-group-body[hidden] {
+      display: none;
+    }
+
+    .market-switcher-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      padding: 9px 12px;
+      border-top: 1px solid var(--sc-border);
+      background: #fff;
+      color: var(--sc-text);
+      text-align: left;
+      font-size: 13px;
+    }
+
+    .market-switcher-item:hover {
+      background: #F9FAFB;
+    }
+
+    .market-switcher-item.is-active {
+      background: #EFF6FF;
+      color: #1D4ED8;
+      font-weight: 600;
+    }
+
+    .market-switcher-item-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .market-switcher-item-label {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .market-switcher-badge {
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #E5E7EB;
+      color: var(--sc-muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .market-switcher-item.is-active .market-switcher-badge {
+      background: #DBEAFE;
+      color: #1D4ED8;
+    }
+
+    .tool-switch {
+      position: relative;
+      width: 54px;
+      height: 32px;
+      flex: none;
+    }
+
+    .tool-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .tool-switch-slider {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #D1D5DB;
+      cursor: pointer;
+      transition: background 0.16s ease;
+    }
+
+    .tool-switch-slider::before {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+      transition: transform 0.16s ease;
+    }
+
+    .tool-switch input:checked + .tool-switch-slider {
+      background: var(--sc-primary);
+    }
+
+    .tool-switch input:checked + .tool-switch-slider::before {
+      transform: translateX(22px);
+    }
+
+    .tool-card-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--sc-text);
+    }
+
+    .tool-card-toggle:hover {
+      background: transparent;
+    }
+
+    .tool-card-toggle-main {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .tool-card-toggle-label {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--sc-text);
+    }
+
+    .tool-card-toggle-arrow {
+      font-size: 16px;
+      color: var(--sc-muted);
+      transition: transform 0.16s ease;
+    }
+
+    .tool-card-toggle[aria-expanded="true"] .tool-card-toggle-arrow {
+      transform: rotate(180deg);
+    }
+
+    .tool-card-body[hidden] {
+      display: none;
+    }
+
+    #bookmarksViewButton {
+      display: none;
+    }
+
+    .sc-bookmarks-panel {
+      position: relative;
+    }
+
+    .sc-bookmarks-panel button {
+      width: auto;
+    }
+
+    .sc-bookmarks-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .sc-bookmarks-add-button {
+      flex: 1;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--sc-primary);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .sc-bookmarks-add-button:hover {
+      background: var(--sc-primary-hover);
+    }
+
+    .sc-bookmarks-search-row {
+      display: grid;
+      grid-template-columns: 1fr 120px;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .sc-bookmarks-textarea {
+      min-height: 82px;
+      padding: 10px;
+      resize: vertical;
+    }
+
+    .sc-bookmarks-list {
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .sc-bookmarks-group + .sc-bookmarks-group {
+      margin-top: 12px;
+    }
+
+    .sc-bookmarks-group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--sc-border);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--sc-text);
+      box-shadow: var(--sc-shadow);
+    }
+
+    .sc-bookmarks-group-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+    }
+
+    .sc-bookmarks-group-arrow {
+      font-size: 12px;
+      transition: transform 0.16s ease;
+    }
+
+    .sc-bookmarks-group-header[aria-expanded="true"] .sc-bookmarks-group-arrow {
+      transform: rotate(90deg);
+    }
+
+    .sc-bookmarks-group-badge {
+      min-width: 24px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #EFF6FF;
+      color: var(--sc-primary);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .sc-bookmarks-group-items {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .sc-bookmarks-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--sc-border);
+      border-left: 4px solid var(--sc-primary);
+      border-radius: 10px;
+      background: var(--sc-card);
+      box-shadow: var(--sc-shadow);
+    }
+
+    .sc-bookmarks-favicon {
+      width: 20px;
+      height: 20px;
+      margin-top: 2px;
+      border-radius: 4px;
+    }
+
+    .sc-bookmarks-card-main {
+      min-width: 0;
+    }
+
+    .sc-bookmarks-card-link {
+      display: inline-block;
+      margin-bottom: 4px;
+      color: var(--sc-text);
+      text-decoration: none;
+      font-weight: 600;
+      word-break: break-word;
+    }
+
+    .sc-bookmarks-card-link:hover {
+      color: var(--sc-primary);
+    }
+
+    .sc-bookmarks-card-url,
+    .sc-bookmarks-card-note {
+      font-size: 12px;
+      color: var(--sc-muted);
+      word-break: break-word;
+    }
+
+    .sc-bookmarks-card-note {
+      margin-top: 6px;
+      white-space: pre-wrap;
+    }
+
+    .sc-bookmarks-card-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .sc-bookmarks-action {
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: #E5E7EB;
+      color: var(--sc-text);
+      font-size: 12px;
+    }
+
+    .sc-bookmarks-action:hover {
+      background: #D1D5DB;
+    }
+
+    .sc-bookmarks-empty {
+      display: grid;
+      place-items: center;
+      gap: 10px;
+      min-height: 220px;
+      padding: 18px;
+      border: 1px dashed var(--sc-border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.86);
+      text-align: center;
+      color: var(--sc-muted);
+    }
+
+    .sc-bookmarks-empty-illustration {
+      font-size: 34px;
+    }
+
+    .sc-bookmarks-modal[hidden] {
+      display: none;
+    }
+
+    .sc-bookmarks-modal {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      background: rgba(17, 24, 39, 0.38);
+      z-index: 20;
+    }
+
+    .sc-bookmarks-modal-dialog {
+      width: 100%;
+      max-width: 380px;
+      padding: 16px;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 12px 30px rgba(17, 24, 39, 0.18);
+    }
+
+    .sc-bookmarks-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .sc-bookmarks-modal-title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .sc-bookmarks-close {
+      width: auto;
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 8px;
+      background: #E5E7EB;
+      color: var(--sc-text);
+    }
+
+    .sc-bookmarks-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .sc-bookmarks-field label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--sc-muted);
+    }
+
+    .sc-bookmarks-color-picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .sc-bookmarks-color-option {
+      width: 28px;
+      height: 28px;
+      border: 2px solid transparent;
+      border-radius: 999px;
+      padding: 0;
+      box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+    }
+
+    .sc-bookmarks-color-option.is-selected {
+      border-color: var(--sc-text);
+      transform: scale(1.08);
+    }
+
+    .sc-bookmarks-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .sc-bookmarks-modal-cancel {
+      background: #E5E7EB;
+      color: var(--sc-text);
+    }
+
+    .sc-bookmarks-toast-stack {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      display: grid;
+      gap: 8px;
+      z-index: 30;
+    }
+
+    .sc-bookmarks-toast {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--sc-text);
+      color: #fff;
+      box-shadow: var(--sc-shadow);
+      font-size: 12px;
+    }
+
+    .draft-progress-bar {
+      height: 8px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      overflow: hidden;
+      margin: 2px 0 4px;
+    }
+
+    .draft-progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--sc-primary);
+      transition: width 0.4s ease;
+    }
+
+    .draft-market-checkboxes {
+      display: grid;
+      gap: 2px;
+      max-height: 160px;
+      overflow-y: auto;
+      padding: 4px;
+      border: 1px solid var(--sc-border);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .draft-market-group-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--sc-muted);
+      padding: 4px 6px 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .draft-market-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .draft-market-item:hover {
+      background: #f3f4f6;
+    }
+
+    .draft-market-item input[type="checkbox"] {
+      cursor: pointer;
+      flex-shrink: 0;
+      width: 14px;
+      height: 14px;
+      accent-color: var(--sc-primary);
+    }
+
+    .draft-collection-stats {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .draft-collection-count-badge {
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: #EFF6FF;
+      color: var(--sc-primary);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .draft-action-button {
+      flex: 1;
+      height: 34px;
+      padding: 0 10px;
+      border-radius: 8px;
+      background: #E5E7EB;
+      color: var(--sc-text);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .draft-action-button:hover {
+      background: #D1D5DB;
+    }
+
+    .draft-reset-button {
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 8px;
+      background: #FEE2E2;
+      color: #DC2626;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .draft-reset-button:hover {
+      background: #FECACA;
+    }
+  </style>
+</head>
+<body>
+  <div class="popup-header">
+    <h1 class="popup-title">Seller Tools</h1>
+    <div class="popup-nav" aria-label="Popup sections">
+      <button id="toolsViewButton" class="popup-nav-button is-active" type="button">&#9776;</button>
+      <button id="bookmarksViewButton" class="popup-nav-button" type="button">&#128278;</button>
+    </div>
+  </div>
+
+  <section id="toolsView" class="popup-view tools-panel is-active">
+    <div id="notScPanel" hidden style="flex-direction:column;align-items:center;gap:12px;padding:32px 16px;text-align:center;">
+      <span style="font-size:36px;line-height:1;">&#127760;</span>
+      <div>
+        <div style="font-size:15px;font-weight:600;color:var(--sc-text);margin-bottom:6px;">Otevřete Amazon Seller Central</div>
+        <div style="font-size:13px;color:var(--sc-muted);line-height:1.5;">Toto rozšíření funguje pouze na stránkách<br><strong>sellercentral.amazon.*</strong></div>
+      </div>
+    </div>
+    <div id="toolsPanel" style="display:contents;">
+    <article class="tool-card" style="padding:8px 14px;">
+      <div class="tool-toggle-row">
+        <span style="font-size:14px;font-weight:600;color:var(--sc-text);">Safety Mode</span>
+        <label class="tool-switch" aria-label="Toggle dry run mode">
+          <input id="dryRunToggle" type="checkbox">
+          <span class="tool-switch-slider"></span>
+        </label>
+      </div>
+    </article>
+
+    <article class="tool-card">
+      <button id="marketSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Market Selector</span>
+          <span id="marketSelectionCount" style="display:none;padding:1px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:11px;font-weight:700;margin-left:6px;">0</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="marketSectionBody" class="tool-card-body" hidden>
+        <p id="marketCurrentLabel" class="tool-status">Current market: —</p>
+        <div class="tool-input-row" style="margin-top:6px;">
+          <button id="marketRefreshButton" class="secondary-button" type="button">Refresh</button>
+          <button id="marketRunPricingButton" class="primary-button" type="button">Run Pricing Fixer</button>
+        </div>
+        <input id="marketSearchInput" class="tool-input" type="search" placeholder="Search markets..." style="margin-top:8px;">
+        <div id="marketList" class="market-switcher-list" style="margin-top:6px;"></div>
+      </div>
+    </article>
+
+    <article class="tool-card">
+      <button id="draftSectionToggle" class="tool-card-toggle" type="button" aria-expanded="true">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Draft Scraping</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="draftSectionBody" class="tool-card-body">
+        <p class="tool-card-description">Run scraping manually</p>
+
+        <div>
+          <label for="draftEmailSelect" class="tool-label">User email</label>
+          <select id="draftEmailSelect" class="tool-select">
+            <option value="amazonmroauto@gmail.com">amazonmroauto@gmail.com</option>
+            <option value="marketing@exasoft.cz">marketing@exasoft.cz</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="draftSkuLimitInput" class="tool-label">SKU limit for test</label>
+          <input id="draftSkuLimitInput" class="tool-input" type="number" min="1" step="1" placeholder="Leave empty for all">
+        </div>
+
+        <div id="draftProgressContainer" hidden>
+          <div class="tool-label" style="margin-top:8px;">Progress</div>
+          <div class="draft-progress-bar"><div id="draftProgressFill" class="draft-progress-fill" style="width:0%"></div></div>
+          <div id="draftProgressText" class="tool-status" style="font-size:12px;"></div>
+        </div>
+
+        <div class="tool-toggle-row" style="margin-top:8px;">
+          <div>
+            <div class="tool-label" style="margin-bottom:2px;">After scraping</div>
+            <span id="draftModeLabel" class="tool-status">Send to Retool (same tab)</span>
+          </div>
+          <label class="tool-switch" aria-label="Toggle Retool / CSV mode">
+            <input id="draftCsvModeToggle" type="checkbox">
+            <span class="tool-switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="tool-label" style="margin-top:8px;">Interval schedule</div>
+        <div class="tool-input-row">
+          <input id="draftScheduleIntervalInput" class="tool-input" type="number" min="5" step="5" value="30" placeholder="Minutes">
+          <button id="draftScheduleSaveButton" class="secondary-button" type="button">Save</button>
+        </div>
+        <div class="tool-inline-action">
+          <button id="draftScheduleDisableButton" class="secondary-button" type="button">Disable</button>
+        </div>
+        <div class="tool-status">Status <span id="draftScheduleStatus">Manual only</span></div>
+
+        <div class="tool-toggle-row" style="margin-top:8px;">
+          <div class="draft-collection-stats">
+            <div>
+              <div class="tool-label" style="margin-bottom:2px;">Collection session</div>
+              <span id="draftCollectionStatus" class="tool-status">Inactive</span>
+            </div>
+            <span id="draftCollectionCount" class="draft-collection-count-badge">0</span>
+            <span class="tool-status">SKUs</span>
+          </div>
+          <label class="tool-switch" aria-label="Toggle collection session">
+            <input id="draftCollectionToggle" type="checkbox">
+            <span class="tool-switch-slider"></span>
+          </label>
+        </div>
+
+        <div class="tool-input-row" style="margin-top:6px;">
+          <button id="draftCollectionExportButton" class="draft-action-button" type="button">&#11015; Export CSV</button>
+          <button id="draftCollectionResetButton" class="draft-reset-button" type="button">&#8635; Reset</button>
+        </div>
+
+        <button id="draftScrapingNoRetoolButton" class="primary-button" type="button" style="margin-top:6px;">&#9654; Run</button>
+        <button id="draftStopButton" class="danger-button" type="button">Stop</button>
+      </div>
+    </article>
+
+    <article class="tool-card">
+      <button id="ibaSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">IBA Shipment</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="ibaSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Daily schedule</p>
+        <button id="ibaAutomationButton" class="primary-button" type="button">Run now</button>
+        <div class="tool-input-row">
+          <input id="ibaScheduleTimeInput" class="tool-input" type="time" value="17:00">
+          <button id="ibaScheduleSaveButton" class="secondary-button" type="button">Save</button>
+        </div>
+        <div class="tool-status">Status <span id="ibaScheduleStatus" aria-live="polite">Disabled</span></div>
+        <button id="ibaScheduleDisableButton" class="secondary-button" type="button">Disable</button>
+        <button id="ibaStopButton" class="danger-button" type="button">Stop</button>
+      </div>
+    </article>
+
+    <article class="tool-card">
+      <div class="tool-card-header">
+        <div>
+          <h2 class="tool-card-title">Pricing Issue Fixer</h2>
+          <p class="tool-card-description">Review and update min/max prices on all pricing issue pages</p>
+        </div>
+      </div>
+      <button id="pricingFixerButton" class="primary-button" type="button">&#128295; Fix Pricing Issues</button>
+    </article>
+
+    <article class="tool-card">
+      <div class="tool-card-header">
+        <div>
+          <h2 class="tool-card-title">B2B Price Fixer</h2>
+          <p class="tool-card-description">Fix Business prices outside min/max range on the current page</p>
+        </div>
+      </div>
+      <button id="b2bFixerButton" class="primary-button" type="button">&#128188; Fix B2B Prices</button>
+    </article>
+
+    <article class="tool-card">
+      <button id="shippingTemplateSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Shipping Template</span>
+          <span style="padding:1px 6px;border-radius:999px;background:#fef3c7;color:#b45309;font-size:10px;font-weight:700;margin-left:6px;">TEST</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="shippingTemplateSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Automate shipping template creation on the current page.</p>
+        <div id="shippingTemplateStatus" class="tool-status" style="display:none;margin-bottom:6px;padding:6px 8px;border-radius:6px;background:#f3f4f6;font-size:12px;word-break:break-word;"></div>
+        <button id="shippingTemplateTestButton" class="primary-button" type="button">&#9654; Run Test Template</button>
+      </div>
+    </article>
+
+    <article class="tool-card">
+      <button id="violationsSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Account Health</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="violationsSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Export account health data</p>
+        <div class="tool-label">Daily schedule</div>
+        <div class="tool-input-row">
+          <input id="violationsScheduleTimeInput" class="tool-input" type="time" value="17:00">
+          <button id="violationsScheduleSaveButton" class="secondary-button" type="button">Save</button>
+        </div>
+        <div class="tool-status">Status <span id="violationsScheduleStatus">Manual only</span></div>
+        <button id="violationsButton" class="secondary-button" type="button">Export</button>
+        <button id="violationsStopButton" class="danger-button" type="button">Stop</button>
+      </div>
+    </article>
+    <div id="status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section id="bookmarksView" class="popup-view sc-bookmarks-panel" aria-label="SC Bookmarks">
+    <div class="sc-bookmarks-toolbar">
+      <button id="bookmarkCurrentPageButton" class="sc-bookmarks-add-button" type="button">Save current page</button>
+    </div>
+
+    <div class="sc-bookmarks-search-row">
+      <input id="bookmarkSearchInput" class="sc-bookmarks-input" type="search" placeholder="Search name, URL or note">
+      <select id="bookmarkCategoryFilter" class="sc-bookmarks-select">
+        <option value="all">All categories</option>
+      </select>
+    </div>
+
+    <div id="bookmarksList" class="sc-bookmarks-list" aria-live="polite"></div>
+  </section>
+
+  <div id="bookmarkModal" class="sc-bookmarks-modal" hidden>
+    <div class="sc-bookmarks-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="bookmarkModalTitle">
+      <div class="sc-bookmarks-modal-header">
+        <h2 id="bookmarkModalTitle" class="sc-bookmarks-modal-title">Add Bookmark</h2>
+        <button id="bookmarkModalCloseButton" class="sc-bookmarks-close" type="button">&times;</button>
+      </div>
+
+      <form id="bookmarkForm" class="sc-bookmarks-form">
+        <div class="sc-bookmarks-field">
+          <label for="bookmarkNameInput">Name</label>
+          <input id="bookmarkNameInput" class="sc-bookmarks-input" name="name" required>
+        </div>
+
+        <div class="sc-bookmarks-field">
+          <label for="bookmarkUrlInput">URL</label>
+          <input id="bookmarkUrlInput" class="sc-bookmarks-input" name="url" type="url" required>
+        </div>
+
+        <div class="sc-bookmarks-field">
+          <label for="bookmarkCategoryInput">Category</label>
+          <input id="bookmarkCategoryInput" class="sc-bookmarks-input" name="category" list="bookmarkCategoryOptions" placeholder="e.g. Listings">
+          <datalist id="bookmarkCategoryOptions"></datalist>
+        </div>
+
+        <div class="sc-bookmarks-field">
+          <label for="bookmarkNoteInput">Note</label>
+          <textarea id="bookmarkNoteInput" class="sc-bookmarks-textarea" name="note" placeholder="Optional note"></textarea>
+        </div>
+
+        <div class="sc-bookmarks-field">
+          <label>Color</label>
+          <div id="bookmarkColorPicker" class="sc-bookmarks-color-picker"></div>
+        </div>
+
+        <div class="sc-bookmarks-modal-actions">
+          <button id="bookmarkCancelButton" class="sc-bookmarks-modal-cancel secondary-button" type="button">Cancel</button>
+          <button id="bookmarkSaveButton" class="primary-button" type="submit">Save bookmark</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="bookmarkToastStack" class="sc-bookmarks-toast-stack" aria-live="polite"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
