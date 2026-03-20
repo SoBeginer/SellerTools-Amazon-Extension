@@ -15,7 +15,8 @@
     "contextMenus",
     "scripting",
     "activeTab",
-    "alarms"
+    "alarms",
+    "downloads"
   ],
   "host_permissions": [
     "https://sellercentral.amazon.ae/*",

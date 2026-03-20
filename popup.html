@@ -839,6 +839,127 @@
     .draft-reset-button:hover {
       background: #FECACA;
     }
+
+    .invoice-cb-label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--sc-text);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+
+    .invoice-cb-label:hover {
+      background: #F3F4F6;
+    }
+
+    .invoice-cb-label input[type="checkbox"] {
+      width: 13px;
+      height: 13px;
+      accent-color: var(--sc-primary);
+      cursor: pointer;
+      flex: none;
+    }
+
+    .inv-dropdown {
+      position: relative;
+    }
+
+    .inv-dropdown-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      background: #fff;
+      border: 1px solid #D1D5DB;
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--sc-text);
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .inv-dropdown-btn.open {
+      border-radius: 8px 8px 0 0;
+    }
+
+    .inv-dropdown-btn:hover {
+      border-color: #9CA3AF;
+    }
+
+    .inv-dropdown-btn .inv-chevron {
+      transition: transform 0.15s;
+      flex: none;
+      margin-left: 6px;
+      color: #6B7280;
+    }
+
+    .inv-dropdown-btn.open .inv-chevron {
+      transform: rotate(180deg);
+    }
+
+    @keyframes vat-spin {
+      to { transform: rotate(360deg); }
+    }
+    .vat-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #E5E7EB;
+      border-top-color: #3B82F6;
+      border-radius: 50%;
+      animation: vat-spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .inv-dropdown-panel {
+      display: none;
+      background: #fff;
+      border: 1px solid #D1D5DB;
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      max-height: 180px;
+      overflow-y: auto;
+      padding: 4px;
+    }
+
+    .inv-dropdown-panel.open {
+      display: block;
+    }
+
+    .inv-dropdown-panel label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 8px;
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 5px;
+      color: var(--sc-text);
+    }
+
+    .inv-dropdown-panel label:hover {
+      background: #F3F4F6;
+    }
+
+    .inv-dropdown-panel input[type="checkbox"] {
+      width: 13px;
+      height: 13px;
+      accent-color: var(--sc-primary);
+      cursor: pointer;
+      flex: none;
+    }
+
+    .inv-select-all-row {
+      border-bottom: 1px solid #E5E7EB;
+      margin-bottom: 3px;
+      padding-bottom: 3px;
+      font-weight: 600;
+      color: var(--sc-primary);
+    }
   </style>
 </head>
 <body>
@@ -889,13 +1010,13 @@
     </article>
 
     <article class="tool-card">
-      <button id="draftSectionToggle" class="tool-card-toggle" type="button" aria-expanded="true">
+      <button id="draftSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
         <span class="tool-card-toggle-main">
           <span class="tool-card-toggle-label">Draft Scraping</span>
         </span>
         <span class="tool-card-toggle-arrow">&#9662;</span>
       </button>
-      <div id="draftSectionBody" class="tool-card-body">
+      <div id="draftSectionBody" class="tool-card-body" hidden>
         <p class="tool-card-description">Run scraping manually</p>
 
         <div>
@@ -984,23 +1105,26 @@
     </article>
 
     <article class="tool-card">
-      <div class="tool-card-header">
-        <div>
-          <h2 class="tool-card-title">Pricing Issue Fixer</h2>
-          <p class="tool-card-description">Review and update min/max prices on all pricing issue pages</p>
+      <button id="priceFixSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Price Issue Fix</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="priceFixSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Fix pricing issues across your inventory</p>
+        <div style="display:flex;flex-direction:column;gap:6px;margin:6px 0;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--sc-muted);cursor:pointer;">
+            <input id="pricingFixMinMaxCheck" type="checkbox" checked style="width:15px;height:15px;accent-color:var(--sc-primary);cursor:pointer;flex:none;">
+            Fix Min/Max prices
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--sc-muted);cursor:pointer;">
+            <input id="pricingFixB2BCheck" type="checkbox" style="width:15px;height:15px;accent-color:var(--sc-primary);cursor:pointer;flex:none;">
+            Fix B2B prices
+          </label>
         </div>
+        <button id="pricingFixRunButton" class="primary-button" type="button">&#128295; Run Price Fix</button>
       </div>
-      <button id="pricingFixerButton" class="primary-button" type="button">&#128295; Fix Pricing Issues</button>
-    </article>
-
-    <article class="tool-card">
-      <div class="tool-card-header">
-        <div>
-          <h2 class="tool-card-title">B2B Price Fixer</h2>
-          <p class="tool-card-description">Fix Business prices outside min/max range on the current page</p>
-        </div>
-      </div>
-      <button id="b2bFixerButton" class="primary-button" type="button">&#128188; Fix B2B Prices</button>
     </article>
 
     <article class="tool-card">
@@ -1012,9 +1136,91 @@
         <span class="tool-card-toggle-arrow">&#9662;</span>
       </button>
       <div id="shippingTemplateSectionBody" class="tool-card-body" hidden>
-        <p class="tool-card-description">Automate shipping template creation on the current page.</p>
+        <p class="tool-card-description">Configure carrier pricing and generate a shipping template.</p>
+
+        <!-- Template Name -->
+        <div class="tool-label" style="margin-bottom:4px;">Template Name</div>
+        <input type="text" id="stTemplateName" placeholder="My Shipping Template" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:6px 8px;font-size:13px;margin-bottom:8px;">
+
+        <!-- CSV Controls -->
+        <div class="tool-label" style="margin-bottom:4px;">Carrier Pricing CSV</div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          <button id="stDownloadCsvTemplate" class="secondary-button" type="button" style="flex:1;height:32px;font-size:12px;">&#11015; CSV Template</button>
+          <button id="stUploadCsvBtn" class="secondary-button" type="button" style="flex:1;height:32px;font-size:12px;">&#11014; Upload CSV</button>
+          <input type="file" id="stCsvUpload" accept=".csv" style="display:none;">
+        </div>
+        <div id="stCsvStatus" style="display:none;font-size:11px;padding:5px 8px;border-radius:5px;margin-bottom:8px;"></div>
+
+        <!-- Pricing Mode -->
+        <div class="tool-label" style="margin-bottom:4px;">Price interpretation</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;margin-bottom:8px;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="stPricingMode" value="per_order" checked style="accent-color:#3B82F6;"> Per order
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="stPricingMode" value="per_item" style="accent-color:#3B82F6;"> Per item
+          </label>
+        </div>
+
+        <!-- Rate Model -->
+        <div class="tool-label" style="margin-bottom:4px;">Rate Model</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;margin-bottom:8px;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="stRateModel" value="shipment_based" checked style="accent-color:#3B82F6;"> Per Item
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;opacity:0.4;cursor:not-allowed;">
+            <input type="radio" name="stRateModel" value="price_banded" disabled style="accent-color:#3B82F6;"> Price Banded
+          </label>
+        </div>
+
+        <!-- Expedited Shipping -->
+        <div style="border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;font-weight:600;">
+            <input type="checkbox" id="stExpeditedEnabled" style="accent-color:#3B82F6;"> Enable Expedited Shipping
+          </label>
+          <div id="stExpeditedOptions" style="display:none;margin-top:8px;">
+            <div style="display:flex;gap:6px;">
+              <div style="flex:1;">
+                <div class="tool-label" style="margin-bottom:3px;font-size:11px;">Markup (%)</div>
+                <input type="number" id="stExpeditedMarkup" value="30" min="0" max="999" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:5px 7px;font-size:12px;">
+              </div>
+              <div style="flex:1;">
+                <div class="tool-label" style="margin-bottom:3px;font-size:11px;">Domestic transit</div>
+                <input type="text" id="stExpeditedDomTransit" value="1-2D" placeholder="1-2D" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:5px 7px;font-size:12px;">
+              </div>
+              <div style="flex:1;">
+                <div class="tool-label" style="margin-bottom:3px;font-size:11px;">Intl transit</div>
+                <input type="text" id="stExpeditedIntlTransit" value="2-3D" placeholder="2-3D" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:5px 7px;font-size:12px;">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Premium Delivery -->
+        <div style="border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;">Premium Delivery (domestic)</div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;margin-bottom:4px;">
+            <input type="checkbox" id="stTwoDayEnabled" style="accent-color:#3B82F6;"> Two-Day delivery
+          </label>
+          <div id="stTwoDayOptions" style="display:none;margin:4px 0 8px 18px;">
+            <div class="tool-label" style="margin-bottom:3px;font-size:11px;">Price</div>
+            <input type="number" id="stTwoDayPrice" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:5px 7px;font-size:12px;">
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+            <input type="checkbox" id="stOneDayEnabled" style="accent-color:#3B82F6;"> One-Day delivery
+          </label>
+          <div id="stOneDayOptions" style="display:none;margin:4px 0 0 18px;">
+            <div class="tool-label" style="margin-bottom:3px;font-size:11px;">Price</div>
+            <input type="number" id="stOneDayPrice" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:5px 7px;font-size:12px;">
+          </div>
+        </div>
+
+        <!-- Status -->
         <div id="shippingTemplateStatus" class="tool-status" style="display:none;margin-bottom:6px;padding:6px 8px;border-radius:6px;background:#f3f4f6;font-size:12px;word-break:break-word;"></div>
-        <button id="shippingTemplateTestButton" class="primary-button" type="button">&#9654; Run Test Template</button>
+
+        <!-- Action Buttons -->
+        <button id="stGenerateButton" class="secondary-button" type="button" style="width:100%;height:36px;font-size:13px;margin-bottom:4px;">&#128196; Preview Config</button>
+        <button id="stCreateButton" class="primary-button" type="button">&#9654; Create Shipping Template</button>
       </div>
     </article>
 
@@ -1037,6 +1243,250 @@
         <button id="violationsStopButton" class="danger-button" type="button">Stop</button>
       </div>
     </article>
+    <article class="tool-card">
+      <button id="vatReportSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">VAT Transaction Reports</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="vatReportSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Download monthly VAT Transaction CSV reports for a custom month range.</p>
+
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <div class="tool-label" style="margin-bottom:4px;">Months</div>
+            <div class="inv-dropdown" id="vatMonthDropdown">
+              <button class="inv-dropdown-btn" type="button" id="vatMonthBtn">
+                <span id="vatMonthLabel">Vyberte měsíce</span>
+                <svg class="inv-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="inv-dropdown-panel" id="vatMonthPanel">
+                <label class="inv-select-all-row"><input type="checkbox" id="vatMonthSelectAll"> Vše</label>
+                <label><input type="checkbox" class="vat-month-cb" value="1"> Leden</label>
+                <label><input type="checkbox" class="vat-month-cb" value="2"> Únor</label>
+                <label><input type="checkbox" class="vat-month-cb" value="3"> Březen</label>
+                <label><input type="checkbox" class="vat-month-cb" value="4"> Duben</label>
+                <label><input type="checkbox" class="vat-month-cb" value="5"> Květen</label>
+                <label><input type="checkbox" class="vat-month-cb" value="6"> Červen</label>
+                <label><input type="checkbox" class="vat-month-cb" value="7"> Červenec</label>
+                <label><input type="checkbox" class="vat-month-cb" value="8"> Srpen</label>
+                <label><input type="checkbox" class="vat-month-cb" value="9"> Září</label>
+                <label><input type="checkbox" class="vat-month-cb" value="10"> Říjen</label>
+                <label><input type="checkbox" class="vat-month-cb" value="11"> Listopad</label>
+                <label><input type="checkbox" class="vat-month-cb" value="12"> Prosinec</label>
+              </div>
+            </div>
+          </div>
+          <div style="flex:1;">
+            <div class="tool-label" style="margin-bottom:4px;">Years</div>
+            <div class="inv-dropdown" id="vatYearDropdown">
+              <button class="inv-dropdown-btn" type="button" id="vatYearBtn">
+                <span id="vatYearLabel">Vyberte rok</span>
+                <svg class="inv-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="inv-dropdown-panel" id="vatYearPanel">
+                <label class="inv-select-all-row"><input type="checkbox" id="vatYearSelectAll"> Vše</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2026"> 2026</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2025"> 2025</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2024"> 2024</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2023"> 2023</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2022"> 2022</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2021"> 2021</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2020"> 2020</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2019"> 2019</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2018"> 2018</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2017"> 2017</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2016"> 2016</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2015"> 2015</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2014"> 2014</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2013"> 2013</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2012"> 2012</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2011"> 2011</label>
+                <label><input type="checkbox" class="vat-year-cb" value="2010"> 2010</label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-label" style="margin-top:8px;margin-bottom:4px;">Formát souboru</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="vatDownloadMode" class="vat-download-mode" value="individual" checked style="accent-color:#3B82F6;"> Soubory
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="vatDownloadMode" class="vat-download-mode" value="zip" style="accent-color:#3B82F6;"> ZIP
+          </label>
+        </div>
+
+        <div id="vatReportStatus" style="display:none;margin-top:10px;display:none;align-items:center;gap:8px;">
+          <div class="vat-spinner"></div>
+          <div id="vatReportStatusLabel" style="font-size:12px;color:#6B7280;font-weight:500;"></div>
+        </div>
+        <button id="vatReportDownloadButton" class="primary-button" type="button" style="margin-top:8px;">&#11015; Download VAT Reports</button>
+      </div>
+    </article>
+    <article class="tool-card">
+      <button id="invoiceSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Invoice Downloader</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="invoiceSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Download seller fee invoice PDFs from Seller Central.</p>
+
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <div class="tool-label" style="margin-bottom:4px;">Months</div>
+            <div class="inv-dropdown" id="invoiceMonthDropdown">
+              <button class="inv-dropdown-btn" type="button" id="invoiceMonthBtn">
+                <span id="invoiceMonthLabel">Všechny měsíce</span>
+                <svg class="inv-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="inv-dropdown-panel" id="invoiceMonthPanel">
+                <label><input type="checkbox" class="invoice-month-cb" value="1"> January</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="2"> February</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="3"> March</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="4"> April</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="5"> May</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="6"> June</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="7"> July</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="8"> August</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="9"> September</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="10"> October</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="11"> November</label>
+                <label><input type="checkbox" class="invoice-month-cb" value="12"> December</label>
+              </div>
+            </div>
+          </div>
+          <div style="flex:1;">
+            <div class="tool-label" style="margin-bottom:4px;">Years</div>
+            <div class="inv-dropdown" id="invoiceYearDropdown">
+              <button class="inv-dropdown-btn" type="button" id="invoiceYearBtn">
+                <span id="invoiceYearLabel">Vyberte rok</span>
+                <svg class="inv-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="inv-dropdown-panel" id="invoiceYearPanel">
+                <label><input type="checkbox" class="invoice-year-cb" value="2026"> 2026</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2025"> 2025</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2024"> 2024</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2023"> 2023</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2022"> 2022</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2021"> 2021</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2020"> 2020</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2019"> 2019</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2018"> 2018</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2017"> 2017</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2016"> 2016</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2015"> 2015</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2014"> 2014</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2013"> 2013</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2012"> 2012</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2011"> 2011</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2010"> 2010</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2009"> 2009</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2008"> 2008</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2007"> 2007</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2006"> 2006</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2005"> 2005</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2004"> 2004</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2003"> 2003</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2002"> 2002</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2001"> 2001</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="2000"> 2000</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="1999"> 1999</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="1998"> 1998</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="1997"> 1997</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="1996"> 1996</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="1995"> 1995</label>
+                <label><input type="checkbox" class="invoice-year-cb" value="1994"> 1994</label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-label" style="margin-top:8px;margin-bottom:4px;">Document type</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="invoiceDocType" class="invoice-doc-type" value="all" checked style="accent-color:#3B82F6;"> Vše
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="invoiceDocType" class="invoice-doc-type" value="invoice" style="accent-color:#3B82F6;"> Faktury
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="invoiceDocType" class="invoice-doc-type" value="creditNote" style="accent-color:#3B82F6;"> Dobropisy
+          </label>
+        </div>
+
+        <div class="tool-label" style="margin-top:8px;margin-bottom:4px;">Formát souboru</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="invoiceDownloadMode" class="invoice-download-mode" value="individual" style="accent-color:#3B82F6;"> Soubory
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="invoiceDownloadMode" class="invoice-download-mode" value="zip" checked style="accent-color:#3B82F6;"> ZIP
+          </label>
+        </div>
+
+        <div id="invoiceStatus" style="display:none;margin-top:10px;align-items:center;gap:8px;">
+          <div class="vat-spinner"></div>
+          <div id="invoiceStatusLabel" style="font-size:12px;color:#6B7280;font-weight:500;"></div>
+        </div>
+        <button id="invoiceDownloadButton" class="primary-button" type="button" style="margin-top:8px;">&#11015; Download Invoices</button>
+      </div>
+    </article>
+
+    <article class="tool-card">
+      <button id="shippingPriceChangeSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Shipping Price Change</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="shippingPriceChangeSectionBody" class="tool-card-body" hidden>
+        <p class="tool-card-description">Open the shipping template list, load templates, then increase or decrease prices by a fixed amount or percentage.</p>
+
+        <!-- Load Templates -->
+        <button id="spcLoadTemplatesBtn" class="secondary-button" type="button" style="width:100%;margin-bottom:8px;">&#128269; Load Templates</button>
+        <div id="spcTemplateList" style="display:none;max-height:160px;overflow-y:auto;border:1px solid #E5E7EB;border-radius:6px;padding:6px 8px;margin-bottom:8px;background:#FAFAFA;font-size:12px;"></div>
+
+        <!-- Change direction -->
+        <div class="tool-label" style="margin-bottom:4px;">Direction</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;margin-bottom:8px;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="spcDirection" value="increase" checked style="accent-color:#3B82F6;"> Increase
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="spcDirection" value="decrease" style="accent-color:#3B82F6;"> Decrease
+          </label>
+        </div>
+
+        <!-- Change type -->
+        <div class="tool-label" style="margin-bottom:4px;">Change type</div>
+        <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;margin-bottom:8px;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
+            <input type="radio" name="spcChangeType" value="fixed" checked style="accent-color:#3B82F6;"> Fixed (€)
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;border-left:1px solid #D1D5DB;">
+            <input type="radio" name="spcChangeType" value="percent" style="accent-color:#3B82F6;"> Percent (%)
+          </label>
+        </div>
+
+        <!-- Amount -->
+        <div class="tool-label" style="margin-bottom:4px;">Amount</div>
+        <input type="number" id="spcAmount" min="0" step="0.01" value="0.10" style="width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:6px;padding:6px 8px;font-size:13px;margin-bottom:8px;">
+
+        <!-- Status -->
+        <div id="spcStatus" style="display:none;margin-bottom:8px;align-items:center;gap:8px;">
+          <div class="vat-spinner"></div>
+          <div id="spcStatusLabel" style="font-size:12px;color:#6B7280;font-weight:500;"></div>
+        </div>
+
+        <button id="spcApplyButton" class="primary-button" type="button" disabled>&#9889; Apply Price Change</button>
+      </div>
+    </article>
+
     <div id="status" aria-live="polite"></div>
     </div>
   </section>

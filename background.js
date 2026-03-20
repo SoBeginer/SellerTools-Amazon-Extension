@@ -12,6 +12,7 @@ const TASK_CONFIG = {
 const MULTI_MARKET_QUEUE_KEY = "seller_extension_multi_market_queue_v1";
 const DRAFT_MULTI_MARKET_QUEUE_KEY = "seller_extension_draft_multi_market_queue_v1";
 const DRAFT_PROGRESS_KEY = "seller_extension_draft_progress_v1";
+const VAT_REPORT_PROGRESS_KEY = "seller_extension_vat_report_progress_v1";
 const SC_BOOKMARKS_STORAGE_KEY = "sc_bookmarks_v1";
 const SC_BOOKMARKS_CONTEXT_MENU_ID = "sc_add_bookmark";
 const DRAFT_SCHEDULE_STORAGE_KEY = "draft_interval_schedule_v1";
@@ -20,8 +21,15 @@ const DRAFT_COLLECTION_STORAGE_KEY = "draft_collection_state_v1";
 const IBA_SCHEDULE_STORAGE_KEY = "iba_daily_schedule_v1";
 const IBA_SCHEDULE_ALARM = "iba_daily_schedule_alarm";
 const IBA_START_URL = "https://sellercentral.amazon.de/orders-v3/mfn/unshipped?orderType=IBA&orderStatus=unshipped&fulfillmentType=mfn&page=1&date-range=last-30&_ibaStart=1";
+const VAT_REPORT_URL = "https://sellercentral.amazon.de/reportcentral/VAT_TRANSACTION/1";
 const DRAFT_FEED_RETOOL_URL = "https://expandoadmin.retool.com/apps/010b5280-0eed-11ec-988e-5f01aea24295/Admin%20v2";
 const DEFAULT_SELLER_CENTRAL_ORIGIN = "https://sellercentral.amazon.de";
+const VAT_REPORT_PARAMS_KEY = "_vatReportParams";
+const VAT_REPORT_PENDING_PARAMS_KEY = "_vatReportPendingParams";
+const PRICE_CHANGE_QUEUE_KEY = "_priceChangeQueue";
+const PRICE_CHANGE_PROGRESS_KEY = "_priceChangeProgress";
+const SHIPPING_TEMPLATE_LIST_KEY = "_shippingTemplateList";
+const SHIPPING_TEMPLATES_PATH = "/sbr#shipping_templates";
 const DRAFT_PARALLEL_TAB_COUNT = 1;
 const SELLER_CENTRAL_URL_PATTERNS = [
   "https://sellercentral.amazon.ae/*",
@@ -49,6 +57,319 @@ const SELLER_CENTRAL_URL_PATTERNS = [
 const taskStateByTabId = new Map();
 const scriptInjectedTabs = new Set();
 const stoppedTabs = new Set();
+
+// ─── Invoice Downloader helpers ──────────────────────────────────────────────
+
+// ─── ZIP builder (store/no-compression — PDFs are already compressed) ─────────
+
+function _zipCrc32(bytes) {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = t[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function buildZip(files) {
+  // files: [{filename: string, data: Uint8Array}]
+  const enc = new TextEncoder();
+  const u16 = (v, d, o) => d.setUint16(o, v, true);
+  const u32 = (v, d, o) => d.setUint32(o, v, true);
+
+  const locals  = [];
+  const central = [];
+  let offset = 0;
+
+  for (const f of files) {
+    const name = enc.encode(f.filename);
+    const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data);
+    const crc  = _zipCrc32(data);
+    const size = data.length;
+
+    const lh = new Uint8Array(30 + name.length);
+    const lv = new DataView(lh.buffer);
+    u32(0x04034b50, lv, 0); u16(20, lv, 4); u16(0, lv, 6); u16(0, lv, 8);
+    u16(0, lv, 10); u16(0, lv, 12); u32(crc, lv, 14);
+    u32(size, lv, 18); u32(size, lv, 22); u16(name.length, lv, 26); u16(0, lv, 28);
+    lh.set(name, 30);
+
+    const ch = new Uint8Array(46 + name.length);
+    const cv = new DataView(ch.buffer);
+    u32(0x02014b50, cv, 0); u16(20, cv, 4); u16(20, cv, 6); u16(0, cv, 8); u16(0, cv, 10);
+    u16(0, cv, 12); u16(0, cv, 14); u32(crc, cv, 16); u32(size, cv, 20); u32(size, cv, 24);
+    u16(name.length, cv, 28); u16(0, cv, 30); u16(0, cv, 32); u16(0, cv, 34);
+    u16(0, cv, 36); u32(0, cv, 38); u32(offset, cv, 42);
+    ch.set(name, 46);
+
+    locals.push(lh, data);
+    central.push(ch);
+    offset += lh.length + size;
+  }
+
+  const cdSize   = central.reduce((s, c) => s + c.length, 0);
+  const eocd     = new Uint8Array(22);
+  const ev       = new DataView(eocd.buffer);
+  u32(0x06054b50, ev, 0); u16(0, ev, 4); u16(0, ev, 6);
+  u16(files.length, ev, 8); u16(files.length, ev, 10);
+  u32(cdSize, ev, 12); u32(offset, ev, 16); u16(0, ev, 20);
+
+  const parts = [...locals, ...central, eocd];
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const out   = new Uint8Array(total);
+  let pos = 0;
+  for (const p of parts) { out.set(p, pos); pos += p.length; }
+  return out;
+}
+
+function uint8ArrayToDataUrl(bytes) {
+  // Convert in chunks to avoid call stack overflow
+  let binary = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return "data:application/zip;base64," + btoa(binary);
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function parseYearMonth(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const match = /^(\d{4})-(\d{2})$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const parsed = new Date(year, month - 1, 1);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function getCoveredMonths(startMonth, endMonth) {
+  const start = parseYearMonth(startMonth);
+  const end = parseYearMonth(endMonth);
+
+  if (!start || !end) {
+    throw new Error("Start month or end month is invalid.");
+  }
+
+  if (start.getTime() > end.getTime()) {
+    throw new Error("Start month must be earlier than or equal to end month.");
+  }
+
+  const months = [];
+  let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  const last = new Date(end.getFullYear(), end.getMonth(), 1);
+
+  while (cursor.getTime() <= last.getTime()) {
+    months.push({
+      year: cursor.getFullYear(),
+      month: cursor.getMonth() + 1
+    });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+
+  return months;
+}
+
+function getMonthDateRange(year, month) {
+  const lastDay = new Date(year, month, 0).getDate();
+  return {
+    start: `${year}/${pad2(month)}/01`,
+    end: `${year}/${pad2(month)}/${pad2(lastDay)}`
+  };
+}
+
+function formatVatMonthLabel(year, month) {
+  return `${year}-${pad2(month)}`;
+}
+
+function buildVatReportMonths(startMonth, endMonth) {
+  return getCoveredMonths(startMonth, endMonth).map(({ year, month }) => {
+    const range = getMonthDateRange(year, month);
+    return {
+      year,
+      month,
+      label: formatVatMonthLabel(year, month),
+      filename: `VAT_Transaction_${year}_${pad2(month)}.csv`,
+      start: range.start,
+      end: range.end
+    };
+  });
+}
+
+function buildVatReportZipName(months) {
+  if (!Array.isArray(months) || months.length === 0) {
+    return `VAT_Transaction_${Date.now()}.zip`;
+  }
+
+  const first = months[0].label;
+  const last = months[months.length - 1].label;
+  return `VAT_Transaction_${first}_to_${last}.zip`;
+}
+
+function createVatProgressState(params) {
+  return {
+    active: true,
+    phase: "queued",
+    message: `Preparing VAT export for ${params.months.length} month(s)...`,
+    totalMonths: params.months.length,
+    submittedCount: 0,
+    downloadedCount: 0,
+    currentMonthLabel: "",
+    pendingMonths: params.months.map((entry) => entry.label),
+    downloadedMonths: [],
+    rangeStart: params.startMonth,
+    rangeEnd: params.endMonth,
+    zipName: params.zipName,
+    downloadMode: params.downloadMode,
+    error: ""
+  };
+}
+
+async function setVatReportProgress(progress) {
+  await chrome.storage.local.set({ [VAT_REPORT_PROGRESS_KEY]: progress });
+}
+
+async function injectVatReportDownloader(tabId, params) {
+  await chrome.storage.local.set({ [VAT_REPORT_PARAMS_KEY]: params });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["vat_report_downloader.js"]
+  });
+}
+
+async function injectShippingPriceChanger(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["shipping_price_changer.js"],
+  });
+}
+
+// Inject a MAIN-world script that reads Amazon's Backbone template models
+// and dispatches them via CustomEvent so the isolated-world content script can
+// build proper edit URLs (each legacy template has its own numeric ID).
+async function injectMainWorldTemplateCapture(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: () => {
+      if (window.__sbrTemplateCaptureActive) return;
+      window.__sbrTemplateCaptureActive = true;
+
+      function dispatch(templates) {
+        document.dispatchEvent(
+          new CustomEvent("__sbrTemplateModels", { detail: { templates } })
+        );
+      }
+
+      function tryExtract() {
+        // Try several possible paths to Amazon's Backbone collection
+        const modelArrays = [
+          window.SBRUI?.Main?.controller?.shippingTemplatesCollection?.models,
+          window.SBRUI?.Main?.app?.shippingTemplatesCollection?.models,
+          window.SBRUIMain?.controller?.shippingTemplatesCollection?.models,
+          window.SBRUIMain?.app?.shippingTemplatesCollection?.models,
+        ].filter(Array.isArray);
+
+        if (modelArrays.length === 0) return null;
+
+        return modelArrays[0].map((m) => {
+          const a = m.attributes || {};
+          // Log all attribute keys so we can tune the extraction
+          const allAttrs = JSON.stringify(Object.keys(a));
+          console.log("[SBRCapture] model id=" + m.id + " cid=" + m.cid + " attrKeys=" + allAttrs);
+          return {
+            id: m.id || m.cid,
+            // Backbone model's own primary key — often the real numeric/UUID template ID
+            modelId: String(m.id || ""),
+            // Try common attribute names used by Amazon SBR for the template identifier
+            templateId:
+              a.shippingTemplateId ||
+              a.merchantShippingGroupId ||
+              a.templateId ||
+              a.id ||
+              m.id ||
+              "",
+            name:
+              a.shippingTemplateName ||
+              a.merchantShippingGroupName ||
+              a.templateName ||
+              a.name ||
+              "",
+            allAttrKeys: allAttrs,
+          };
+        });
+      }
+
+      let tries = 0;
+      const poll = setInterval(() => {
+        const result = tryExtract();
+        if (result !== null || tries > 40) {
+          clearInterval(poll);
+          dispatch(result || []);
+        }
+        tries++;
+      }, 500);
+    },
+  });
+}
+
+async function injectInvoiceDownloader(tabId, params) {
+  // Store params in local storage — readable by the isolated-world script
+  await chrome.storage.local.set({ _invoiceDownloaderParams: params });
+
+  // Step 1: inject window.open interceptor into MAIN world via func (Chrome 95+).
+  // Dispatches a document CustomEvent that isolated world listens to.
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: () => {
+      if (window.__invoiceOpenInterceptorActive) return;
+      window.__invoiceOpenInterceptorActive = true;
+      const origOpen = window.open;
+      window.open = function interceptedOpen(url, ...rest) {
+        if (url && (url.includes("/documents/") || /\.pdf(\?|$)/i.test(url))) {
+          document.dispatchEvent(
+            new CustomEvent("__invoicePdfCaptured", { detail: { url } })
+          );
+          return null; // block new tab
+        }
+        return origOpen.apply(this, [url, ...rest]);
+      };
+    }
+  });
+
+  // Step 2a: isolated world diagnostic
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => { console.log("[InvoiceDownloader] Isolated world func test OK"); }
+  });
+
+  // Step 2b: inject main logic in ISOLATED world (chrome.runtime available here).
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["invoice_downloader.js"]
+  });
+}
 const draftRunsById = new Map();
 let runningDraftRunId = null;
 
@@ -1358,6 +1679,321 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })();
   }
+
+  if (message?.type === "VAT_REPORT_START") {
+    (async () => {
+      try {
+        const startMonth = typeof message.startMonth === "string" ? message.startMonth.trim() : "";
+        const endMonth = typeof message.endMonth === "string" ? message.endMonth.trim() : "";
+        const downloadMode = ["zip", "individual", "both"].includes(message.downloadMode)
+          ? message.downloadMode
+          : "zip";
+
+        if (!startMonth || !endMonth) {
+          throw new Error("Start month and end month are required.");
+        }
+
+        const months = buildVatReportMonths(startMonth, endMonth);
+        if (months.length === 0) {
+          throw new Error("Selected range does not contain any months to export.");
+        }
+
+        const params = {
+          startMonth,
+          endMonth,
+          downloadMode,
+          months,
+          zipName: buildVatReportZipName(months)
+        };
+
+        await setVatReportProgress(createVatProgressState(params));
+
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          throw new Error("No active tab.");
+        }
+
+        if (tab.url?.includes("/reportcentral/VAT_TRANSACTION/1")) {
+          await injectVatReportDownloader(tab.id, params);
+        } else {
+          await chrome.storage.local.set({ [VAT_REPORT_PENDING_PARAMS_KEY]: params });
+          taskStateByTabId.set(tab.id, { taskType: "vatReportDownload", tabId: tab.id });
+          await chrome.tabs.update(tab.id, { url: VAT_REPORT_URL });
+        }
+
+        sendResponse({ success: true, monthCount: months.length });
+      } catch (error) {
+        await setVatReportProgress({
+          active: false,
+          phase: "error",
+          message: "",
+          totalMonths: 0,
+          submittedCount: 0,
+          downloadedCount: 0,
+          currentMonthLabel: "",
+          pendingMonths: [],
+          downloadedMonths: [],
+          rangeStart: "",
+          rangeEnd: "",
+          zipName: "",
+          downloadMode: "zip",
+          error: error.message || "Failed to start VAT report export."
+        });
+        sendResponse({ success: false, error: error.message || "Failed to start VAT report export." });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "VAT_REPORT_START_NEW") {
+    (async () => {
+      try {
+        const months = Array.isArray(message.months) ? message.months : [];
+        const downloadMode = ["zip", "individual"].includes(message.downloadMode)
+          ? message.downloadMode
+          : "zip";
+
+        if (months.length === 0) {
+          throw new Error("Select at least one month.");
+        }
+
+        // Convert month/year combinations to month entries
+        const monthEntries = months.map(({ month, year }) => {
+          const range = getMonthDateRange(year, month);
+          return {
+            year,
+            month,
+            label: formatVatMonthLabel(year, month),
+            filename: `VAT_Transaction_${year}_${pad2(month)}.csv`,
+            start: range.start,
+            end: range.end
+          };
+        });
+
+        const params = {
+          startMonth: monthEntries[0]?.label || "",
+          endMonth: monthEntries[monthEntries.length - 1]?.label || "",
+          downloadMode,
+          months: monthEntries,
+          zipName: buildVatReportZipName(monthEntries)
+        };
+
+        await setVatReportProgress(createVatProgressState(params));
+
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          throw new Error("No active tab.");
+        }
+
+        if (tab.url?.includes("/reportcentral/VAT_TRANSACTION/1")) {
+          await injectVatReportDownloader(tab.id, params);
+        } else {
+          await chrome.storage.local.set({ [VAT_REPORT_PENDING_PARAMS_KEY]: params });
+          taskStateByTabId.set(tab.id, { taskType: "vatReportDownload", tabId: tab.id });
+          await chrome.tabs.update(tab.id, { url: VAT_REPORT_URL });
+        }
+
+        sendResponse({ success: true, monthCount: monthEntries.length });
+      } catch (error) {
+        await setVatReportProgress({
+          active: false,
+          phase: "error",
+          message: "",
+          totalMonths: 0,
+          submittedCount: 0,
+          downloadedCount: 0,
+          currentMonthLabel: "",
+          pendingMonths: [],
+          downloadedMonths: [],
+          rangeStart: "",
+          rangeEnd: "",
+          zipName: "",
+          downloadMode: "zip",
+          error: error.message || "Failed to start VAT report export."
+        });
+        sendResponse({ success: false, error: error.message || "Failed to start VAT report export." });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "VAT_REPORT_PROGRESS") {
+    (async () => {
+      await setVatReportProgress(message.progress || null);
+    })();
+    return false;
+  }
+
+  if (message?.type === "VAT_REPORT_FILE_READY") {
+    const { url, filename } = message;
+    if (url && filename) {
+      chrome.downloads.download({ url, filename, conflictAction: "uniquify" });
+    }
+    return false;
+  }
+
+  if (message?.type === "VAT_REPORT_ZIP_READY") {
+    const { files, zipName } = message;
+    try {
+      const zipData = buildZip(files);
+      const dataUrl = uint8ArrayToDataUrl(zipData);
+      chrome.downloads.download({ url: dataUrl, filename: zipName, conflictAction: "uniquify" });
+    } catch (error) {
+      console.error("[BG] VAT ZIP build failed:", error);
+    }
+    return false;
+  }
+
+  if (message?.type === "VAT_REPORT_DONE") {
+    chrome.storage.local.remove([VAT_REPORT_PARAMS_KEY, VAT_REPORT_PENDING_PARAMS_KEY]).catch(() => {});
+    const tabId = sender.tab?.id;
+    if (typeof tabId === "number") clearTask(tabId);
+    return false;
+  }
+
+  if (message?.type === "VAT_REPORT_ERROR") {
+    chrome.storage.local.remove([VAT_REPORT_PARAMS_KEY, VAT_REPORT_PENDING_PARAMS_KEY]).catch(() => {});
+    const tabId = sender.tab?.id;
+    if (typeof tabId === "number") clearTask(tabId);
+    return false;
+  }
+
+  if (message?.type === "INVOICE_DOWNLOADER_START") {
+    (async () => {
+      try {
+        const { months, years, docType = "all", downloadMode = "zip" } = message;
+        const params = { months, years, docType, downloadMode };
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        console.log("[BG] INVOICE_DOWNLOADER_START tab:", tab?.id, tab?.url);
+        if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
+
+        if (tab.url?.includes("/tax/seller-fee-invoices")) {
+          console.log("[BG] On invoice page — injecting…");
+          await injectInvoiceDownloader(tab.id, params);
+          console.log("[BG] Injection complete.");
+        } else {
+          console.log("[BG] Not on invoice page — navigating…");
+          // Store params so onUpdated can inject after navigation completes
+          await chrome.storage.local.set({ _invoiceDownloaderPendingParams: params });
+          taskStateByTabId.set(tab.id, { taskType: "invoiceDownload", tabId: tab.id });
+          await chrome.tabs.update(tab.id, { url: "https://sellercentral.amazon.de/tax/seller-fee-invoices" });
+        }
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("INVOICE_DOWNLOADER_START error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "INVOICE_PDF_READY") {
+    const { url, filename } = message;
+    if (url) chrome.downloads.download({ url, filename, conflictAction: "uniquify" });
+  }
+
+  if (message?.type === "INVOICE_ZIP_READY") {
+    const { files, zipName } = message;
+    try {
+      console.log(`[BG] Building ZIP from ${files.length} file(s)…`);
+      const zipData  = buildZip(files);
+      const dataUrl  = uint8ArrayToDataUrl(zipData);
+      chrome.downloads.download({ url: dataUrl, filename: zipName, conflictAction: "uniquify" });
+      console.log(`[BG] ZIP download started: "${zipName}"`);
+    } catch (err) {
+      console.error("[BG] ZIP build failed:", err);
+    }
+  }
+
+  if (message?.type === "INVOICE_DOWNLOAD_DONE") {
+    chrome.storage.local.remove(["_invoiceDownloaderParams", "_invoiceDownloaderPendingParams"]).catch(() => {});
+    const tabId = sender.tab?.id;
+    if (typeof tabId === "number") clearTask(tabId);
+  }
+
+  if (message?.type === "LIST_SHIPPING_TEMPLATES") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
+
+        // Derive SC origin from current tab or fall back to .de
+        let origin = "https://sellercentral.amazon.de";
+        try {
+          const u = new URL(tab.url || "");
+          if (u.hostname.includes("sellercentral.amazon")) origin = u.origin;
+        } catch (_) {}
+
+        const listUrl = origin + SHIPPING_TEMPLATES_PATH;
+
+        await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: null });
+        taskStateByTabId.set(tab.id, { taskType: "listShippingTemplates", tabId: tab.id });
+        await chrome.tabs.update(tab.id, { url: listUrl });
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("[BG] LIST_SHIPPING_TEMPLATES error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "PRICE_CHANGE_START") {
+    (async () => {
+      try {
+        const { templates, config } = message;
+        if (!templates?.length) {
+          sendResponse({ success: false, error: "No templates provided." });
+          return;
+        }
+
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          sendResponse({ success: false, error: "No active tab." });
+          return;
+        }
+
+        let origin = DEFAULT_SELLER_CENTRAL_ORIGIN;
+        try {
+          const u = new URL(tab.url || "");
+          if (u.hostname.includes("sellercentral.amazon")) origin = u.origin;
+        } catch (_) {}
+
+        const queue = {
+          config,
+          templates,
+          currentIndex: 0,
+          totalChanged: 0,
+          errors: [],
+          origin,
+        };
+
+        await chrome.storage.local.set({
+          [PRICE_CHANGE_QUEUE_KEY]: queue,
+          [PRICE_CHANGE_PROGRESS_KEY]: {
+            active: true,
+            current: 0,
+            total: templates.length,
+            totalChanged: 0,
+            label: templates[0]?.name || "",
+            error: "",
+          },
+        });
+
+        // Navigate to the template list page — onUpdated will inject the script
+        // and call __selectAndApplyForTemplate for each template in sequence.
+        taskStateByTabId.set(tab.id, { taskType: "priceChange", phase: "selectEdit", tabId: tab.id });
+        await chrome.tabs.update(tab.id, { url: origin + SHIPPING_TEMPLATES_PATH });
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("[BG] PRICE_CHANGE_START error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -1391,6 +2027,280 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       clearTask(tabId);
     }
 
+    return;
+  }
+
+  if (taskState.taskType === "invoiceDownload") {
+    if (tab.url?.includes("/tax/seller-fee-invoices")) {
+      try {
+        const r = await chrome.storage.local.get("_invoiceDownloaderPendingParams");
+        const params = r._invoiceDownloaderPendingParams;
+        if (params) await injectInvoiceDownloader(tabId, params);
+        clearTask(tabId);
+      } catch (error) {
+        console.error("Failed to inject invoice_downloader.js", error);
+        clearTask(tabId);
+      }
+    }
+    return;
+  }
+
+  if (taskState.taskType === "vatReportDownload") {
+    if (tab.url?.includes("/reportcentral/VAT_TRANSACTION/1")) {
+      try {
+        const result = await chrome.storage.local.get(VAT_REPORT_PENDING_PARAMS_KEY);
+        const params = result[VAT_REPORT_PENDING_PARAMS_KEY];
+        if (params) {
+          await injectVatReportDownloader(tabId, params);
+        }
+        clearTask(tabId);
+      } catch (error) {
+        console.error("Failed to inject vat_report_downloader.js", error);
+        clearTask(tabId);
+      }
+    }
+    return;
+  }
+
+  if (taskState.taskType === "listShippingTemplates") {
+    if (tab.url?.includes("/sbr")) {
+      (async () => {
+        try {
+          await injectShippingPriceChanger(tabId);
+          const [result] = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => window.__listShippingTemplates(),
+          });
+          const templates = result?.result || [];
+          console.log(`[BG] listShippingTemplates: found ${templates.length} template(s).`);
+          await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: templates });
+        } catch (error) {
+          console.error("[BG] listShippingTemplates error:", error);
+          await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: [] });
+        } finally {
+          clearTask(tabId);
+        }
+      })();
+    }
+    return;
+  }
+
+  if (taskState.taskType === "priceChange") {
+    (async () => {
+      let queue;
+      try {
+        const stored = await chrome.storage.local.get(PRICE_CHANGE_QUEUE_KEY);
+        queue = stored[PRICE_CHANGE_QUEUE_KEY];
+        if (!queue) { clearTask(tabId); return; }
+
+        const template = queue.templates[queue.currentIndex];
+        if (!template) { clearTask(tabId); return; }
+
+        const origin = queue.origin || DEFAULT_SELLER_CENTRAL_ORIGIN;
+        const listUrl = origin + SHIPPING_TEMPLATES_PATH;
+        const phase = taskState.phase || "selectEdit";
+
+        await injectShippingPriceChanger(tabId);
+
+        let r;
+
+        if (phase === "selectEdit") {
+          console.log(`[BG] priceChange: selecting "${template.name}" (${queue.currentIndex + 1}/${queue.templates.length})`);
+
+          // ── Step 1: click template in sidebar (sets SPA state) ──────────
+          let selectResult;
+          try {
+            const [s] = await chrome.scripting.executeScript({
+              target: { tabId },
+              func: (name) => window.__selectTemplateInSidebar(name),
+              args: [template.name],
+            });
+            selectResult = s?.result;
+          } catch (err) {
+            console.error(`[BG] priceChange: __selectTemplateInSidebar threw:`, err);
+            selectResult = { selected: false, error: err.message };
+          }
+
+          if (!selectResult?.selected) {
+            r = { success: false, error: selectResult?.error || "Sidebar selection failed.", changed: 0 };
+          } else {
+            // ── Step 2: open the actions dropdown (async — needs a wait) ─────
+            // Amazon's dropdown items are in the DOM but hidden; click trigger to reveal.
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                  const trigger = document.querySelector(
+                    ".a-button-dropdown .a-dropdown-trigger, " +
+                    "button.a-dropdown-trigger, " +
+                    "[data-action='a-dropdown-button'], " +
+                    ".a-button-dropdown button"
+                  );
+                  if (trigger) {
+                    console.log("[SBREdit] Opening actions dropdown…");
+                    trigger.click();
+                  }
+                },
+              });
+            } catch (err) {
+              console.warn("[BG] priceChange: dropdown trigger failed:", err.message);
+            }
+
+            // Wait for dropdown animation / DOM update
+            await new Promise((res) => setTimeout(res, 500));
+
+            // ── Step 3: read Edit element href from now-visible dropdown ─────
+            let editUrl = null;
+            try {
+              const [hrefRes] = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                  const sidebar = document.querySelector("#sbrui_element_shippingTemplateLinks");
+
+                  // 1) Check <li id="edit"> for a nested anchor with a real href
+                  const editLi = document.getElementById("edit");
+                  if (editLi) {
+                    const a = editLi.querySelector("a[href]");
+                    const href = a?.href || a?.getAttribute("href");
+                    if (href && !href.endsWith("#") && !href.startsWith("javascript") && href.includes("/sbr")) {
+                      console.log("[SBREdit] Found Edit href in #edit li:", href);
+                      return href;
+                    }
+                  }
+
+                  // 2) Scan all visible anchors whose text is "Edit" / "Bearbeiten"
+                  for (const el of document.querySelectorAll("a[href]")) {
+                    const t = (el.textContent || el.getAttribute("aria-label") || "").trim();
+                    if ((t === "Edit" || t === "Bearbeiten") && el.offsetParent !== null && !sidebar?.contains(el)) {
+                      const href = el.href;
+                      if (href && !href.endsWith("#") && !href.startsWith("javascript") && href.includes("/sbr")) {
+                        console.log("[SBREdit] Found Edit href by text scan:", href);
+                        return href;
+                      }
+                    }
+                  }
+
+                  console.log("[SBREdit] No Edit href found — will click element.");
+                  return null;
+                },
+              });
+              editUrl = hrefRes?.result || null;
+            } catch (err) {
+              console.warn("[BG] priceChange: Edit href read failed:", err.message);
+            }
+
+            if (editUrl) {
+              console.log(`[BG] priceChange: navigating to Edit href for "${template.name}": ${editUrl}`);
+              taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "applyChange", tabId });
+              await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
+              await chrome.tabs.update(tabId, { url: editUrl });
+              return;
+            }
+
+            // ── Step 4: no href — click Edit element and catch navigation ────
+            console.log(`[BG] priceChange: clicking Edit element for "${template.name}".`);
+            try {
+              const [execResult] = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                  // Click the Edit element that's already visible from Step 2
+                  const editLi = document.getElementById("edit");
+                  const editEl = editLi?.querySelector("a") || editLi
+                    || [...document.querySelectorAll("a, button, li")].find((el) => {
+                        const t = el.textContent.trim();
+                        return (t === "Edit" || t === "Bearbeiten") && el.offsetParent !== null;
+                      });
+                  if (!editEl) return { clicked: false };
+                  console.log("[SBREdit] Clicking Edit element:", editEl.tagName, editEl.id);
+                  editEl.click();
+                  return { clicked: true };
+                },
+              });
+              // If click caused navigation, this executeScript result is irrelevant —
+              // the navErr catch below handles it. If it stayed in SPA, apply price change.
+              if (execResult?.result?.clicked) {
+                await new Promise((res) => setTimeout(res, 800));
+                const [applyResult] = await chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: (cfg) => window.__applyPriceChange(cfg),
+                  args: [queue.config],
+                });
+                r = applyResult?.result || { success: false, error: "No result from applyPriceChange", changed: 0 };
+              } else {
+                r = { success: false, error: "Edit element not found in dropdown.", changed: 0 };
+              }
+            } catch (navErr) {
+              console.log(`[BG] priceChange: full-page navigation for "${template.name}" — waiting for edit page.`);
+              taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "applyChange", tabId });
+              await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
+              return;
+            }
+          }
+        } else {
+          // phase === "applyChange": we're on the edit page after full-page navigation.
+          console.log(`[BG] priceChange: applying on edit page for "${template.name}" — url: ${tab.url}`);
+          try {
+            const [execResult] = await chrome.scripting.executeScript({
+              target: { tabId },
+              func: (cfg) => window.__applyPriceChange(cfg),
+              args: [queue.config],
+            });
+            r = execResult?.result || { success: false, error: "applyPriceChange returned null — script not injected?", changed: 0 };
+          } catch (err) {
+            console.warn(`[BG] priceChange: applyPriceChange executeScript threw: ${err.message}`);
+            r = { success: false, error: `Script error: ${err.message}`, changed: 0 };
+          }
+        }
+
+        if (r.success) {
+          queue.totalChanged += r.changed || 0;
+          console.log(`[BG] priceChange: ✓ ${r.changed} price(s) changed in "${template.name}"`);
+        } else {
+          console.warn(`[BG] priceChange: ✗ "${template.name}": ${r.error}`);
+          queue.errors.push({ template: template.name, error: r.error || "Unknown error" });
+        }
+
+        queue.currentIndex++;
+        const hasMore = queue.currentIndex < queue.templates.length;
+        const nextTemplate = queue.templates[queue.currentIndex];
+
+        await chrome.storage.local.set({
+          [PRICE_CHANGE_PROGRESS_KEY]: {
+            active: hasMore,
+            current: queue.currentIndex,
+            total: queue.templates.length,
+            totalChanged: queue.totalChanged,
+            label: nextTemplate?.name || "",
+            error: queue.errors.map((e) => `${e.template}: ${e.error}`).join("; "),
+          },
+        });
+
+        if (hasMore) {
+          await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
+          // Navigate back to list page for the next template
+          taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "selectEdit", tabId });
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          await chrome.tabs.update(tabId, { url: listUrl });
+        } else {
+          await chrome.storage.local.remove(PRICE_CHANGE_QUEUE_KEY);
+          clearTask(tabId);
+        }
+      } catch (error) {
+        console.error("[BG] priceChange error:", error);
+        await chrome.storage.local.set({
+          [PRICE_CHANGE_PROGRESS_KEY]: {
+            active: false,
+            current: queue?.currentIndex ?? 0,
+            total: queue?.templates?.length ?? 0,
+            totalChanged: queue?.totalChanged ?? 0,
+            label: "",
+            error: error.message || String(error),
+          },
+        }).catch(() => {});
+        await chrome.storage.local.remove(PRICE_CHANGE_QUEUE_KEY).catch(() => {});
+        clearTask(tabId);
+      }
+    })();
     return;
   }
 });

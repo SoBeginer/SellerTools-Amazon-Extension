@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   const statusElement = document.getElementById("status");
   const toolsView = document.getElementById("toolsView");
   const bookmarksView = document.getElementById("bookmarksView");
@@ -47,19 +47,54 @@
   const violationsSectionBody = document.getElementById("violationsSectionBody");
   const violationsScheduleSaveButton = document.getElementById("violationsScheduleSaveButton");
   const violationsScheduleStatus = document.getElementById("violationsScheduleStatus");
-  const pricingFixerButton = document.getElementById("pricingFixerButton");
-  const b2bFixerButton = document.getElementById("b2bFixerButton");
+  const pricingFixMinMaxCheck = document.getElementById("pricingFixMinMaxCheck");
+  const pricingFixB2BCheck = document.getElementById("pricingFixB2BCheck");
+  const pricingFixRunButton = document.getElementById("pricingFixRunButton");
   const shippingTemplateSectionToggle = document.getElementById("shippingTemplateSectionToggle");
   const shippingTemplateSectionBody = document.getElementById("shippingTemplateSectionBody");
-  const shippingTemplateTestButton = document.getElementById("shippingTemplateTestButton");
   const shippingTemplateStatus = document.getElementById("shippingTemplateStatus");
+  const stTemplateName = document.getElementById("stTemplateName");
+  const stDownloadCsvTemplate = document.getElementById("stDownloadCsvTemplate");
+  const stUploadCsvBtn = document.getElementById("stUploadCsvBtn");
+  const stCsvUpload = document.getElementById("stCsvUpload");
+  const stCsvStatus = document.getElementById("stCsvStatus");
+  const stExpeditedEnabled = document.getElementById("stExpeditedEnabled");
+  const stExpeditedOptions = document.getElementById("stExpeditedOptions");
+  const stExpeditedMarkup = document.getElementById("stExpeditedMarkup");
+  const stExpeditedDomTransit = document.getElementById("stExpeditedDomTransit");
+  const stExpeditedIntlTransit = document.getElementById("stExpeditedIntlTransit");
+  const stTwoDayEnabled = document.getElementById("stTwoDayEnabled");
+  const stTwoDayOptions = document.getElementById("stTwoDayOptions");
+  const stTwoDayPrice = document.getElementById("stTwoDayPrice");
+  const stOneDayEnabled = document.getElementById("stOneDayEnabled");
+  const stOneDayOptions = document.getElementById("stOneDayOptions");
+  const stOneDayPrice = document.getElementById("stOneDayPrice");
+  const stGenerateButton = document.getElementById("stGenerateButton");
+  const stCreateButton = document.getElementById("stCreateButton");
   const violationsStopButton = document.getElementById("violationsStopButton");
+  const vatReportSectionToggle = document.getElementById("vatReportSectionToggle");
+  const vatReportSectionBody = document.getElementById("vatReportSectionBody");
+  const vatSummary = document.getElementById("vatReportSummary");
+  const vatReportStatus = document.getElementById("vatReportStatus");
+  const vatReportDownloadButton = document.getElementById("vatReportDownloadButton");
+  const invoiceSectionToggle  = document.getElementById("invoiceSectionToggle");
+  const invoiceSectionBody    = document.getElementById("invoiceSectionBody");
+  const invoiceStatusEl       = document.getElementById("invoiceStatus");
+  const invoiceDownloadButton = document.getElementById("invoiceDownloadButton");
+  const shippingPriceChangeSectionToggle = document.getElementById("shippingPriceChangeSectionToggle");
+  const shippingPriceChangeSectionBody   = document.getElementById("shippingPriceChangeSectionBody");
+  const spcLoadTemplatesBtn  = document.getElementById("spcLoadTemplatesBtn");
+  const spcTemplateListEl    = document.getElementById("spcTemplateList");
+  const spcApplyButton       = document.getElementById("spcApplyButton");
+  const spcStatusDiv         = document.getElementById("spcStatus");
+  const spcStatusLabel       = document.getElementById("spcStatusLabel");
   const ibaStartUrl = "https://sellercentral.amazon.de/orders-v3/mfn/unshipped?orderType=IBA&orderStatus=unshipped&fulfillmentType=mfn&page=1&date-range=last-30&_ibaStart=1";
   const pricingFixerUrl = "https://sellercentral.amazon.de/myinventory/inventory?fulfilledBy=all&page=1&pageSize=250&sort=sales_desc&status=pricing_issue&_pricingFixerStart=1";
   const b2bFixerUrl = "https://sellercentral.amazon.de/myinventory/inventory?fulfilledBy=all&page=1&pageSize=250&sort=sales_desc&status=pricing_issue&ref_=xx_invmgr_favb_xx&_b2bFixerStart=1";
   const dryRunStorageKey = "seller_extension_dry_run_v1";
   const draftCsvModeKey = "seller_extension_draft_csv_mode_v1";
   const draftProgressKey = "seller_extension_draft_progress_v1";
+  const vatReportProgressKey = "seller_extension_vat_report_progress_v1";
   const marketCacheKey = "seller_extension_market_cache_v2";
   const marketSelectionKey = "seller_extension_market_selection_v1";
   const marketCacheTtlMs = 30 * 60 * 1000;
@@ -101,6 +136,141 @@
   function setSectionExpanded(toggleElement, bodyElement, expanded) {
     toggleElement.setAttribute("aria-expanded", String(expanded));
     bodyElement.hidden = !expanded;
+  }
+
+  function parseYearMonthInput(value) {
+    if (typeof value !== "string") return null;
+    const match = /^(\d{4})-(\d{2})$/.exec(value.trim());
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const parsed = new Date(year, month - 1, 1);
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1
+    ) {
+      return null;
+    }
+    return parsed;
+  }
+
+  function getCoveredMonthsForRange(startValue, endValue) {
+    const start = parseYearMonthInput(startValue);
+    const end = parseYearMonthInput(endValue);
+
+    if (!start || !end) {
+      return [];
+    }
+
+    if (start.getTime() > end.getTime()) {
+      return [];
+    }
+
+    const covered = [];
+    let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+    const last = new Date(end.getFullYear(), end.getMonth(), 1);
+
+    while (cursor.getTime() <= last.getTime()) {
+      covered.push({
+        year: cursor.getFullYear(),
+        month: cursor.getMonth() + 1
+      });
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    }
+
+    return covered;
+  }
+
+  function formatYearMonthLabel(year, month) {
+    return `${year}-${String(month).padStart(2, "0")}`;
+  }
+
+  function renderVatReportSummary(message, isError = false) {
+    if (!vatReportSummary) return;
+    if (!message) {
+      vatReportSummary.style.display = "none";
+      vatReportSummary.textContent = "";
+      vatReportSummary.style.background = "#f3f4f6";
+      vatReportSummary.style.color = "";
+      return;
+    }
+
+    vatReportSummary.style.display = "block";
+    vatReportSummary.style.background = isError ? "#fee2e2" : "#f3f4f6";
+    vatReportSummary.style.color = isError ? "#dc2626" : "";
+    vatReportSummary.textContent = message;
+  }
+
+  function renderVatReportStatus(progress) {
+    if (!vatReportStatus) return;
+    const label = document.getElementById("vatReportStatusLabel");
+
+    if (!progress || typeof progress !== "object" || !progress.active) {
+      vatReportStatus.style.display = "none";
+      return;
+    }
+
+    const phase = progress.phase || "";
+    const phaseWords = {
+      submitting:  "Requesting",
+      waiting:     "Processing",
+      downloading: "Downloading",
+      zipping:     "Zipping",
+      error:       "Error",
+    };
+    const word = phaseWords[phase];
+    if (!word) { vatReportStatus.style.display = "none"; return; }
+
+    vatReportStatus.style.display = "flex";
+    if (label) { label.textContent = word; label.style.color = phase === "error" ? "#EF4444" : "#6B7280"; }
+  }
+
+  function updateVatReportInputsSummary() {
+    if (!vatReportStartMonthInput || !vatReportEndMonthInput) return;
+
+    const startValue = vatReportStartMonthInput.value;
+    const endValue = vatReportEndMonthInput.value;
+
+    if (!startValue && !endValue) {
+      renderVatReportSummary("");
+      return;
+    }
+
+    if (!startValue || !endValue) {
+      renderVatReportSummary("Select both start month and end month.", true);
+      return;
+    }
+
+    const startDate = parseYearMonthInput(startValue);
+    const endDate = parseYearMonthInput(endValue);
+    if (!startDate || !endDate) {
+      renderVatReportSummary("Month format is invalid.", true);
+      return;
+    }
+
+    if (startDate.getTime() > endDate.getTime()) {
+      renderVatReportSummary("Start date must be earlier than or equal to end date.", true);
+      return;
+    }
+
+    const coveredMonths = getCoveredMonthsForRange(startValue, endValue);
+    if (coveredMonths.length === 0) {
+      renderVatReportSummary("Selected range does not contain any month.", true);
+      return;
+    }
+
+    const monthLabels = coveredMonths.map(({ year, month }) => formatYearMonthLabel(year, month));
+    renderVatReportSummary(`Months to download: ${coveredMonths.length} (${monthLabels.join(", ")})`);
+  }
+
+  async function loadVatReportProgress() {
+    try {
+      const result = await chrome.storage.local.get(vatReportProgressKey);
+      renderVatReportStatus(result[vatReportProgressKey] || null);
+    } catch {
+      renderVatReportStatus(null);
+    }
   }
 
   async function getActiveTab() {
@@ -210,6 +380,25 @@
       setDraftCollectionState(response.state);
     } catch {
       setDraftCollectionState(null);
+    }
+  }
+
+  function downloadShippingLog(logText, status) {
+    try {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}`
+                  + `_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const fname = `ShippingTemplate_${status}_${stamp}.log`;
+      const blob = new Blob([logText], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fname;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn("Log download failed:", e);
     }
   }
 
@@ -499,6 +688,13 @@
     setSectionExpanded(draftSectionToggle, draftSectionBody, !expanded);
   });
 
+  const priceFixSectionToggle = document.getElementById("priceFixSectionToggle");
+  const priceFixSectionBody = document.getElementById("priceFixSectionBody");
+  priceFixSectionToggle.addEventListener("click", () => {
+    const expanded = priceFixSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(priceFixSectionToggle, priceFixSectionBody, !expanded);
+  });
+
   ibaSectionToggle.addEventListener("click", () => {
     const expanded = ibaSectionToggle.getAttribute("aria-expanded") === "true";
     setSectionExpanded(ibaSectionToggle, ibaSectionBody, !expanded);
@@ -581,89 +777,364 @@
     setSectionExpanded(shippingTemplateSectionToggle, shippingTemplateSectionBody, !expanded);
   });
 
-  shippingTemplateTestButton.addEventListener("click", async () => {
-    const SHIPPING_TEMPLATE_TEST_CONFIG = {
-      templateName: "TEST TEMPLATE",
-      rateModel: "shipment_based",
-      ssaEnabled: false,
-      domesticShipping: {
-        "EU_STANDARD.DOMESTIC": {
-          enabled: true,
-          regions: [
-            {
-              // Region 0: Mainland Italy — countries omitted → keeps existing selection
-              transitTime: "5-7D",
-              pricing: {
-                model: "shipment_based",
-                pricePerOrder: 3.99,
-                unitPrice: 1.2,
-                unitMeasure: "Per Item"
-              }
-            },
-            {
-              // Region 1: Italian Islands — keep only Sardinia (ITM) + Sicily (ITN)
-              countries: ["ITM", "ITN"],
-              transitTime: "5-7D",
-              pricing: {
-                model: "shipment_based",
-                pricePerOrder: 3.99,
-                unitPrice: 1.2,
-                unitMeasure: "Per Item"
-              }
-            }
-          ]
-        }
-      },
-      internationalShipping: {}
-    };
+  // ── Shipping Template UI ────────────────────────────────────────────────────
 
-    const setST = (msg, isError = false) => {
-      shippingTemplateStatus.style.display = "";
-      shippingTemplateStatus.style.background = isError ? "#fee2e2" : "#f3f4f6";
-      shippingTemplateStatus.style.color = isError ? "#dc2626" : "";
-      shippingTemplateStatus.textContent = msg;
-    };
+  const ST_CSV_TEMPLATE =
+    "countries,standard_transit_time,base_price\n" +
+    "DE,2-3D,3.99\n" +
+    "AT;FR;CZ,3-5D,8.99\n" +
+    "PL;SK;HU,4-7D,9.99\n";
 
-    const tab = await getActiveTab();
-    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
-      setST("Open a Seller Central page first.", true);
-      return;
+  stDownloadCsvTemplate.addEventListener("click", () => {
+    const blob = new Blob([ST_CSV_TEMPLATE], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "shipping_template_example.csv"; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  stUploadCsvBtn.addEventListener("click", () => stCsvUpload.click());
+
+  let stParsedRows = null;
+
+  stCsvUpload.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const result = stParseCsv(ev.target.result);
+      if (result.error) {
+        stShowCsvStatus(result.error, true);
+        stParsedRows = null;
+      } else {
+        stParsedRows = result.rows;
+        stShowCsvStatus(`✓ ${result.rows.length} row(s) loaded.`, false);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  });
+
+  function stShowCsvStatus(msg, isError) {
+    stCsvStatus.style.display = "block";
+    stCsvStatus.style.background = isError ? "#fee2e2" : "#dcfce7";
+    stCsvStatus.style.color = isError ? "#dc2626" : "#16a34a";
+    stCsvStatus.textContent = msg;
+  }
+
+  function stParseCsv(text) {
+    const lines = text.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) return { error: "CSV must have a header and at least one row." };
+    const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
+    for (const col of ["countries", "standard_transit_time", "base_price"]) {
+      if (!header.includes(col)) return { error: `Missing column: "${col}"` };
+    }
+    const ci = (col) => header.indexOf(col);
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",").map((c) => c.trim());
+      const countries = cols[ci("countries")]?.split(";").map((c) => c.trim().toUpperCase()).filter(Boolean);
+      const transitTime = cols[ci("standard_transit_time")]?.trim();
+      const basePrice = parseFloat(cols[ci("base_price")]);
+      if (!countries?.length) return { error: `Row ${i}: empty countries.` };
+      if (!transitTime) return { error: `Row ${i}: missing transit_time.` };
+      if (isNaN(basePrice) || basePrice < 0) return { error: `Row ${i}: invalid base_price.` };
+      rows.push({ countries, transitTime, basePrice });
+    }
+    return { rows };
+  }
+
+  function stDetectMarketplace(url) {
+    if (!url) return null;
+    const tldMap = { de: "DE", it: "IT", fr: "FR", es: "ES", nl: "NL", pl: "PL", se: "SE", "co.uk": "GB" };
+    const m = url.match(/sellercentral\.amazon\.([a-z.]+)/);
+    return m ? (tldMap[m[1]] || null) : null;
+  }
+
+  function stBuildConfig(rows, marketplace, pricingMode, expedited, twoDay, oneDay, templateName) {
+    const applyPricing = (price) => ({
+      model: "shipment_based",
+      pricePerOrder: pricingMode === "per_order" ? price : 0,
+      unitPrice: pricingMode === "per_item" ? price : 0,
+      unitMeasure: "Per Item",
+    });
+
+    const needsInherit = expedited.enabled || twoDay.enabled || oneDay.enabled;
+    const domesticRow = rows.find((r) => r.countries.includes(marketplace));
+    const intlRows = rows.filter((r) => !r.countries.includes(marketplace));
+
+    const domesticShipping = {};
+    const internationalShipping = {};
+
+    if (domesticRow) {
+      domesticShipping["EU_STANDARD.DOMESTIC"] = {
+        enabled: true,
+        clearExisting: true,
+        publishCodes: needsInherit,
+        regions: [{ countries: [marketplace + "0"], transitTime: domesticRow.transitTime, pricing: applyPricing(domesticRow.basePrice) }],
+      };
     }
 
-    shippingTemplateTestButton.disabled = true;
+    if (intlRows.length > 0) {
+      internationalShipping["EU_STANDARD.INTERNATIONAL"] = {
+        enabled: true,
+        clearExisting: true,
+        regions: intlRows.map((row) => ({
+          countries: row.countries.map((c) => c + "0"),
+          transitTime: row.transitTime,
+          pricing: applyPricing(row.basePrice),
+        })),
+      };
+    }
+
+    if (expedited.enabled && domesticRow) {
+      const p = Math.round(domesticRow.basePrice * (1 + expedited.markup / 100) * 100) / 100;
+      domesticShipping["EU_EXPEDITED.DOMESTIC"] = {
+        enabled: true, clearExisting: true, inheritRegions: true,
+        regions: [{ countries: [], transitTime: expedited.domTransit, pricing: applyPricing(p) }],
+      };
+    }
+
+    if (expedited.enabled && intlRows.length > 0) {
+      internationalShipping["EU_EXPEDITED.INTERNATIONAL"] = {
+        enabled: true, clearExisting: true,
+        regions: intlRows.map((row) => {
+          const p = Math.round(row.basePrice * (1 + expedited.markup / 100) * 100) / 100;
+          return { countries: row.countries.map((c) => c + "0"), transitTime: expedited.intlTransit, pricing: applyPricing(p) };
+        }),
+      };
+    }
+
+    if (twoDay.enabled) {
+      domesticShipping["EU_PREMIUM.DOMESTIC"] = {
+        enabled: true, clearExisting: true, inheritRegions: true,
+        regions: [{ countries: [], transitTime: 2, pricing: applyPricing(twoDay.price) }],
+      };
+    }
+
+    if (oneDay.enabled) {
+      domesticShipping["EU_NEXT_DAY.DOMESTIC"] = {
+        enabled: true, clearExisting: true, inheritRegions: true,
+        regions: [{ countries: [], transitTime: 1, pricing: applyPricing(oneDay.price) }],
+      };
+    }
+
+    return { templateName: templateName || "My Shipping Template", rateModel: "shipment_based", ssaEnabled: false, domesticShipping, internationalShipping };
+  }
+
+  function stGetFormValues() {
+    return {
+      pricingMode: document.querySelector("input[name='stPricingMode']:checked")?.value || "per_order",
+      templateName: stTemplateName.value.trim() || "My Shipping Template",
+      expedited: {
+        enabled: stExpeditedEnabled.checked,
+        markup: parseFloat(stExpeditedMarkup.value) || 0,
+        domTransit: stExpeditedDomTransit.value.trim() || "1-2D",
+        intlTransit: stExpeditedIntlTransit.value.trim() || "2-3D",
+      },
+      twoDay: { enabled: stTwoDayEnabled.checked, price: parseFloat(stTwoDayPrice.value) || 0 },
+      oneDay: { enabled: stOneDayEnabled.checked, price: parseFloat(stOneDayPrice.value) || 0 },
+    };
+  }
+
+  stExpeditedEnabled.addEventListener("change", () => { stExpeditedOptions.style.display = stExpeditedEnabled.checked ? "block" : "none"; });
+  stTwoDayEnabled.addEventListener("change",    () => { stTwoDayOptions.style.display    = stTwoDayEnabled.checked    ? "block" : "none"; });
+  stOneDayEnabled.addEventListener("change",    () => { stOneDayOptions.style.display    = stOneDayEnabled.checked    ? "block" : "none"; });
+
+  const setST = (msg, isError = false) => {
+    shippingTemplateStatus.style.display = "";
+    shippingTemplateStatus.style.background = isError ? "#fee2e2" : "#f3f4f6";
+    shippingTemplateStatus.style.color = isError ? "#dc2626" : "";
+    shippingTemplateStatus.textContent = msg;
+  };
+
+  stGenerateButton.addEventListener("click", async () => {
+    if (!stParsedRows) { setST("Upload a CSV first.", true); return; }
+    const tab = await getActiveTab();
+    const marketplace = stDetectMarketplace(tab?.url || "");
+    const { pricingMode, expedited, twoDay, oneDay, templateName } = stGetFormValues();
+    console.log("[ShippingTemplate] CSV rows:", stParsedRows.length);
+    console.log("[ShippingTemplate] Marketplace:", marketplace);
+    console.log("[ShippingTemplate] Domestic row:", stParsedRows.find((r) => r.countries.includes(marketplace)));
+    console.log("[ShippingTemplate] International rows:", stParsedRows.filter((r) => !r.countries.includes(marketplace)).length);
+    console.log("[ShippingTemplate] Pricing mode:", pricingMode);
+    console.log("[ShippingTemplate] Expedited:", expedited.enabled, "markup:", expedited.markup);
+    console.log("[ShippingTemplate] Two-day:", twoDay.enabled, "One-day:", oneDay.enabled);
+    if (!marketplace) { setST("Could not detect marketplace — open a Seller Central page.", true); return; }
+    if (!stParsedRows.find((r) => r.countries.includes(marketplace))) { setST(`No CSV row for domestic country (${marketplace}).`, true); return; }
+    const config = stBuildConfig(stParsedRows, marketplace, pricingMode, expedited, twoDay, oneDay, templateName);
+    console.log("[ShippingTemplate] Generated config:", JSON.stringify(config, null, 2));
+    setST("Config generated — see DevTools console for details.");
+  });
+
+  stCreateButton.addEventListener("click", async () => {
+    if (!stParsedRows) { setST("Upload a CSV first.", true); return; }
+    const tab = await getActiveTab();
+    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+      setST("Open a Seller Central shipping template page first.", true); return;
+    }
+    const marketplace = stDetectMarketplace(tab.url);
+    if (!marketplace) { setST("Could not detect marketplace from URL.", true); return; }
+    if (!stParsedRows.find((r) => r.countries.includes(marketplace))) { setST(`No CSV row for domestic country (${marketplace}).`, true); return; }
+    const { pricingMode, expedited, twoDay, oneDay, templateName } = stGetFormValues();
+    const config = stBuildConfig(stParsedRows, marketplace, pricingMode, expedited, twoDay, oneDay, templateName);
+    console.log("[ShippingTemplate] Starting automation:", JSON.stringify(config, null, 2));
+    stCreateButton.disabled = true;
     setST("Injecting automator...");
-
     try {
-      // Step 1: inject the automator script file into the page
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["shipping_template_automator.js"]
-      });
-
-      setST("Running test automation...");
-
-      // Step 2: call the exposed global with the test config
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["shipping_template_automator.js"] });
+      setST("Running automation...");
       const [result] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: (config) => {
-          return window.__runShippingTemplateAutomation(config)
-            .then(() => ({ success: true }))
-            .catch((err) => ({ success: false, error: err?.message || String(err) }));
-        },
-        args: [SHIPPING_TEMPLATE_TEST_CONFIG]
+        func: (cfg) => window.__runShippingTemplateAutomation(cfg),
+        args: [config],
       });
-
-      if (result?.result?.success === false) {
-        setST(`Error: ${result.result.error}`, true);
-      } else {
-        setST("✓ Test automation started — check the page and DevTools console for progress.");
-      }
+      const r = result?.result;
+      if (r?.log) downloadShippingLog(r.log, r.status || (r.success ? "SUCCESS" : "ERROR"));
+      if (r?.success === false) { setST(`Error: ${r.error}`, true); }
+      else { setST("✓ Shipping template created — log downloaded."); }
     } catch (err) {
       setST(`Failed: ${err.message || String(err)}`, true);
     } finally {
-      shippingTemplateTestButton.disabled = false;
+      stCreateButton.disabled = false;
     }
   });
+
+  // ── Shipping Price Change ────────────────────────────────────────────────
+
+  let spcLoadedTemplates = []; // { name, editUrl }[]
+
+  function setSpcStatus(text, isError = false) {
+    if (!text) {
+      spcStatusDiv.style.display = "none";
+      spcStatusLabel.textContent = "";
+      return;
+    }
+    spcStatusDiv.style.display = "flex";
+    spcStatusLabel.textContent = text;
+    spcStatusLabel.style.color = isError ? "#EF4444" : "#6B7280";
+  }
+
+  function renderSpcTemplateList(templates) {
+    spcLoadedTemplates = templates;
+    if (!templates.length) {
+      spcTemplateListEl.style.display = "none";
+      setSpcStatus("No templates found on this page.", true);
+      spcApplyButton.disabled = true;
+      return;
+    }
+    spcTemplateListEl.innerHTML = templates
+      .map(
+        (t, i) =>
+          `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;">` +
+          `<input type="checkbox" class="spc-template-cb" data-idx="${i}" checked style="accent-color:#3B82F6;">` +
+          `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.name.replace(/</g, "&lt;")}</span>` +
+          `</label>`
+      )
+      .join("");
+    spcTemplateListEl.style.display = "block";
+    setSpcStatus(`${templates.length} template(s) loaded.`);
+    spcApplyButton.disabled = false;
+  }
+
+  shippingPriceChangeSectionToggle.addEventListener("click", () => {
+    const expanded = shippingPriceChangeSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(shippingPriceChangeSectionToggle, shippingPriceChangeSectionBody, !expanded);
+  });
+
+  const SHIPPING_TEMPLATE_LIST_KEY = "_shippingTemplateList";
+
+  spcLoadTemplatesBtn.addEventListener("click", async () => {
+    setSpcStatus("Navigating to template list…");
+    spcLoadTemplatesBtn.disabled = true;
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: "LIST_SHIPPING_TEMPLATES" });
+      if (!resp?.success) {
+        setSpcStatus(`Error: ${resp?.error || "Unknown error"}`, true);
+        spcLoadTemplatesBtn.disabled = false;
+      }
+      // Result arrives via storage change listener below
+    } catch (err) {
+      setSpcStatus(`Failed: ${err.message || String(err)}`, true);
+      spcLoadTemplatesBtn.disabled = false;
+    }
+  });
+
+  spcApplyButton.addEventListener("click", async () => {
+    const checked = [...spcTemplateListEl.querySelectorAll(".spc-template-cb:checked")];
+    if (!checked.length) { setSpcStatus("Select at least one template.", true); return; }
+
+    const templates = checked.map((cb) => spcLoadedTemplates[Number(cb.dataset.idx)]).filter(Boolean);
+    const direction  = document.querySelector("input[name='spcDirection']:checked")?.value || "increase";
+    const changeType = document.querySelector("input[name='spcChangeType']:checked")?.value || "fixed";
+    const amount     = parseFloat(document.getElementById("spcAmount").value) || 0;
+
+    if (amount <= 0) { setSpcStatus("Enter a positive amount.", true); return; }
+
+    setSpcStatus("Processing...");
+    spcApplyButton.disabled = true;
+
+    try {
+      const resp = await chrome.runtime.sendMessage({
+        type: "PRICE_CHANGE_START",
+        templates,
+        config: { direction, changeType, amount },
+      });
+      if (!resp?.success) {
+        setSpcStatus(`Error: ${resp?.error || "Unknown error"}`, true);
+        spcApplyButton.disabled = false;
+      }
+      // Status will be updated via storage polling below
+    } catch (err) {
+      setSpcStatus(`Failed: ${err.message || String(err)}`, true);
+      spcApplyButton.disabled = false;
+    }
+  });
+
+  // Poll price change progress from storage
+  const PRICE_CHANGE_PROGRESS_KEY = "_priceChangeProgress";
+
+  function renderSpcProgress(progress) {
+    if (!progress) return;
+    if (!progress.active) {
+      spcApplyButton.disabled = false;
+      if (progress.error) {
+        setSpcStatus(`Done with errors: ${progress.error}`, true);
+      } else {
+        setSpcStatus(`Done — ${progress.totalChanged || 0} price(s) changed in ${progress.total || 0} template(s).`);
+      }
+      return;
+    }
+    const pct = progress.total > 0 ? `${progress.current}/${progress.total}` : "";
+    setSpcStatus(`Applying ${pct}${progress.label ? ` — ${progress.label}` : ""}…`);
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes[PRICE_CHANGE_PROGRESS_KEY]) {
+      renderSpcProgress(changes[PRICE_CHANGE_PROGRESS_KEY].newValue);
+    }
+    if (changes[SHIPPING_TEMPLATE_LIST_KEY]) {
+      const templates = changes[SHIPPING_TEMPLATE_LIST_KEY].newValue;
+      if (Array.isArray(templates)) {
+        renderSpcTemplateList(templates);
+        spcLoadTemplatesBtn.disabled = false;
+        if (templates.length === 0) {
+          setSpcStatus("No template edit links found on that page.", true);
+        }
+      }
+    }
+  });
+
+  (async () => {
+    const r = await chrome.storage.local.get([PRICE_CHANGE_PROGRESS_KEY, SHIPPING_TEMPLATE_LIST_KEY]);
+    renderSpcProgress(r[PRICE_CHANGE_PROGRESS_KEY]);
+    if (Array.isArray(r[SHIPPING_TEMPLATE_LIST_KEY]) && r[SHIPPING_TEMPLATE_LIST_KEY].length > 0) {
+      renderSpcTemplateList(r[SHIPPING_TEMPLATE_LIST_KEY]);
+    }
+  })();
+
+  // ── end Shipping Price Change ─────────────────────────────────────────────
 
   violationsSectionToggle.addEventListener("click", () => {
     const expanded = violationsSectionToggle.getAttribute("aria-expanded") === "true";
@@ -1144,41 +1615,41 @@
     }
   });
 
-  pricingFixerButton.addEventListener("click", async () => {
-    setStatus("Opening Pricing Issue Fixer...");
+  pricingFixRunButton.addEventListener("click", async () => {
+    const fixMinMax = pricingFixMinMaxCheck.checked;
+    const fixB2B = pricingFixB2BCheck.checked;
 
-    try {
-      const tab = await getActiveTab();
-
-      if (tab?.id && /^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
-        await ensureContentScriptAndSend(tab, { action: "PRICING_FIXER_START" });
-      } else {
-        await chrome.tabs.create({ url: pricingFixerUrl });
-      }
-
-      setStatus("Pricing Issue Fixer started.");
-      window.close();
-    } catch (error) {
-      setStatus(error.message || "Unable to start Pricing Issue Fixer.");
+    if (!fixMinMax && !fixB2B) {
+      setStatus("Select at least one option.");
+      return;
     }
-  });
 
-  b2bFixerButton.addEventListener("click", async () => {
-    setStatus("Opening B2B Price Fixer...");
+    setStatus("Starting Price Fix...");
 
     try {
       const tab = await getActiveTab();
+      const isOnSC = tab?.id && /^https:\/\/sellercentral\.amazon\./.test(tab.url || "");
 
-      if (tab?.id && /^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
-        await ensureContentScriptAndSend(tab, { action: "B2B_FIXER_START" });
-      } else {
-        await chrome.tabs.create({ url: b2bFixerUrl });
+      if (fixMinMax) {
+        if (isOnSC) {
+          await ensureContentScriptAndSend(tab, { action: "PRICING_FIXER_START" });
+        } else {
+          await chrome.tabs.create({ url: pricingFixerUrl });
+        }
       }
 
-      setStatus("B2B Price Fixer started.");
+      if (fixB2B) {
+        if (isOnSC) {
+          await ensureContentScriptAndSend(tab, { action: "B2B_FIXER_START" });
+        } else {
+          await chrome.tabs.create({ url: b2bFixerUrl });
+        }
+      }
+
+      setStatus("Price Fix started.");
       window.close();
     } catch (error) {
-      setStatus(error.message || "Unable to start B2B Price Fixer.");
+      setStatus(error.message || "Unable to start Price Fix.");
     }
   });
 
@@ -1206,6 +1677,138 @@
 
   violationsStopButton.addEventListener("click", () => {
     setStatus("Violations stop is not implemented yet.");
+  });
+
+  vatReportSectionToggle.addEventListener("click", () => {
+    const expanded = vatReportSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(vatReportSectionToggle, vatReportSectionBody, !expanded);
+  });
+
+  vatReportDownloadButton.addEventListener("click", async () => {
+    const checkedMonths = [...vatReportSectionBody.querySelectorAll(".vat-month-cb:checked")]
+      .map((cb) => parseInt(cb.value, 10));
+    const checkedYears = [...vatReportSectionBody.querySelectorAll(".vat-year-cb:checked")]
+      .map((cb) => parseInt(cb.value, 10));
+
+    if (checkedMonths.length === 0) {
+      renderVatReportStatus({ active: true, phase: "error" });
+      document.getElementById("vatReportStatusLabel").textContent = "Vyberte měsíc";
+      return;
+    }
+    if (checkedYears.length === 0) {
+      renderVatReportStatus({ active: true, phase: "error" });
+      document.getElementById("vatReportStatusLabel").textContent = "Vyberte rok";
+      return;
+    }
+
+    // Build all month-year combinations
+    const combinations = [];
+    for (const year of checkedYears) {
+      for (const month of checkedMonths) {
+        combinations.push({ year, month });
+      }
+    }
+    combinations.sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month);
+
+    const downloadMode = vatReportSectionBody.querySelector(".vat-download-mode:checked")?.value || "zip";
+
+    // Show spinner immediately
+    renderVatReportStatus({ active: true, phase: "submitting", submittedCount: 0, totalMonths: combinations.length });
+
+    vatReportDownloadButton.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "VAT_REPORT_START_NEW",
+        months: combinations,
+        downloadMode
+      });
+
+      if (!response?.success) {
+        renderVatReportStatus({ active: true, phase: "error" });
+        document.getElementById("vatReportStatusLabel").textContent = response?.error || "Chyba";
+      } else {
+        await loadVatReportProgress();
+      }
+    } catch (error) {
+      renderVatReportStatus({ active: true, phase: "error" });
+      document.getElementById("vatReportStatusLabel").textContent = error.message || "Chyba";
+    } finally {
+      vatReportDownloadButton.disabled = false;
+    }
+  });
+
+  invoiceSectionToggle.addEventListener("click", () => {
+    const expanded = invoiceSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(invoiceSectionToggle, invoiceSectionBody, !expanded);
+  });
+
+  invoiceDownloadButton.addEventListener("click", async () => {
+    const checkedMonths = [...invoiceSectionBody.querySelectorAll(".invoice-month-cb:checked")]
+      .map((cb) => parseInt(cb.value, 10));
+    const months = checkedMonths.length > 0 ? checkedMonths : [1,2,3,4,5,6,7,8,9,10,11,12];
+    const years  = [...invoiceSectionBody.querySelectorAll(".invoice-year-cb:checked")]
+      .map((cb) => parseInt(cb.value, 10));
+
+    if (years.length === 0) {
+      invoiceStatusEl.style.display = "flex";
+      document.getElementById("invoiceStatusLabel").textContent = "Vyber rok";
+      document.getElementById("invoiceStatusLabel").style.color = "#EF4444";
+      return;
+    }
+
+    const MONTH_NAMES_CZ = ["leden","únor","březen","duben","květen","červen",
+                            "červenec","srpen","září","říjen","listopad","prosinec"];
+    const now       = new Date();
+    const nowYear   = now.getFullYear();
+    const nowMonth  = now.getMonth() + 1;
+    const nowDay    = now.getDate();
+    const prevMonth = nowMonth === 1 ? 12 : nowMonth - 1;
+    const prevYear  = nowMonth === 1 ? nowYear - 1 : nowYear;
+
+    const validCombos = [];
+    for (const y of years) {
+      for (const m of months) {
+        if (y > nowYear || (y === nowYear && m >= nowMonth)) continue;
+        if (y === prevYear && m === prevMonth && nowDay < 15) continue;
+        validCombos.push({ month: m, year: y });
+      }
+    }
+
+    if (validCombos.length === 0) {
+      invoiceStatusEl.style.display = "flex";
+      document.getElementById("invoiceStatusLabel").textContent = "Žádná platná kombinace";
+      document.getElementById("invoiceStatusLabel").style.color = "#EF4444";
+      return;
+    }
+
+    const docType      = invoiceSectionBody.querySelector(".invoice-doc-type:checked")?.value ?? "all";
+    const downloadMode = invoiceSectionBody.querySelector(".invoice-download-mode:checked")?.value ?? "zip";
+
+    // Show spinner immediately
+    invoiceStatusEl.style.display = "flex";
+    const invoiceLbl = document.getElementById("invoiceStatusLabel");
+    invoiceLbl.textContent = "Processing";
+    invoiceLbl.style.color = "#6B7280";
+
+    invoiceDownloadButton.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type:    "INVOICE_DOWNLOADER_START",
+        months:  validCombos.map((c) => c.month),
+        years:   validCombos.map((c) => c.year),
+        docType,
+        downloadMode,
+      });
+      if (!response?.success) {
+        invoiceLbl.textContent = response?.error || "Chyba";
+        invoiceLbl.style.color = "#EF4444";
+      }
+    } catch (error) {
+      invoiceLbl.textContent = error.message || "Chyba";
+      invoiceLbl.style.color = "#EF4444";
+    } finally {
+      invoiceDownloadButton.disabled = false;
+    }
   });
 
   toolsViewButton.addEventListener("click", () => {
@@ -1653,11 +2256,165 @@
       return;
     }
 
-    setSectionExpanded(draftSectionToggle, draftSectionBody, true);
+    setSectionExpanded(draftSectionToggle, draftSectionBody, false);
     setSectionExpanded(ibaSectionToggle, ibaSectionBody, false);
     setSectionExpanded(marketSectionToggle, marketSectionBody, false);
     setSectionExpanded(violationsSectionToggle, violationsSectionBody, false);
     setSectionExpanded(shippingTemplateSectionToggle, shippingTemplateSectionBody, false);
+    setSectionExpanded(vatReportSectionToggle, vatReportSectionBody, false);
+    setSectionExpanded(invoiceSectionToggle, invoiceSectionBody, false);
+    setSectionExpanded(shippingPriceChangeSectionToggle, shippingPriceChangeSectionBody, false);
+    void loadVatReportProgress();
+    window.setInterval(() => {
+      void loadVatReportProgress();
+    }, 1000);
+    // Pre-check current year
+    const currentYear = String(Math.min(new Date().getFullYear(), 2026));
+    const yearCb = invoiceSectionBody.querySelector(`.invoice-year-cb[value="${currentYear}"]`);
+    if (yearCb) yearCb.checked = true;
+
+    // ── Invoice dropdown logic ─────────────────────────────────────────────────
+    const MONTH_NAMES = ["January","February","March","April","May","June",
+                         "July","August","September","October","November","December"];
+
+    function updateDropdownLabel(btnId, labelId, checkboxClass, emptyText, namesFn) {
+      const checked = [...invoiceSectionBody.querySelectorAll(`.${checkboxClass}:checked`)];
+      const label   = document.getElementById(labelId);
+      if (!label) return;
+      if (checked.length === 0) {
+        label.textContent = emptyText;
+      } else {
+        label.textContent = `${checked.length} vybráno`;
+      }
+    }
+
+    function scrollInvoiceSectionToBottom() {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const scrollRoot = document.scrollingElement || document.documentElement || document.body;
+          if (scrollRoot) {
+            scrollRoot.scrollTo({
+              top: scrollRoot.scrollHeight,
+              behavior: "smooth"
+            });
+          }
+
+          invoiceSectionBody.scrollIntoView({
+            block: "end",
+            behavior: "smooth"
+          });
+        });
+      });
+    }
+
+    function setupInvDropdown(btnId, panelId, checkboxClass, emptyText, namesFn) {
+      const btn   = document.getElementById(btnId);
+      const panel = document.getElementById(panelId);
+      if (!btn || !panel) return;
+
+      const refresh = () => updateDropdownLabel(btnId, btnId.replace("Btn", "Label"), checkboxClass, emptyText, namesFn);
+      refresh();
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = panel.classList.contains("open");
+        // close all other dropdowns first
+        document.querySelectorAll(".inv-dropdown-panel").forEach((p) => { p.classList.remove("open"); });
+        document.querySelectorAll(".inv-dropdown-btn").forEach((b) => b.classList.remove("open"));
+        if (!isOpen) {
+          panel.classList.add("open");
+          btn.classList.add("open");
+          scrollInvoiceSectionToBottom();
+        }
+      });
+
+      // prevent clicks inside the panel from bubbling to the document close handler
+      panel.addEventListener("click", (e) => e.stopPropagation());
+      panel.addEventListener("change", refresh);
+    }
+
+    setupInvDropdown(
+      "invoiceMonthBtn", "invoiceMonthPanel", "invoice-month-cb",
+      "Všechny měsíce",
+      (v) => MONTH_NAMES[parseInt(v, 10) - 1]
+    );
+    setupInvDropdown(
+      "invoiceYearBtn", "invoiceYearPanel", "invoice-year-cb",
+      "Vyberte rok",
+      (v) => v
+    );
+    // Update year label after pre-checking current year
+    updateDropdownLabel("invoiceYearBtn", "invoiceYearLabel", "invoice-year-cb", "Vyberte rok", (v) => v);
+
+    // ── VAT dropdown logic ────────────────────────────────────────────────────
+    function setupVatDropdown(btnId, panelId, checkboxClass, emptyText) {
+      const btn   = document.getElementById(btnId);
+      const panel = document.getElementById(panelId);
+      if (!btn || !panel) return null;
+
+      const refresh = () => {
+        const checked = [...vatReportSectionBody.querySelectorAll(`.${checkboxClass}:checked`)];
+        const label   = document.getElementById(btnId.replace("Btn", "Label"));
+        if (!label) return;
+        label.textContent = checked.length === 0 ? emptyText : `${checked.length} vybráno`;
+      };
+      refresh();
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = panel.classList.contains("open");
+        document.querySelectorAll(".inv-dropdown-panel").forEach((p) => { p.classList.remove("open"); });
+        document.querySelectorAll(".inv-dropdown-btn").forEach((b) => b.classList.remove("open"));
+        if (!isOpen) {
+          panel.classList.add("open");
+          btn.classList.add("open");
+          requestAnimationFrame(() => {
+            document.getElementById("vatReportDownloadButton")?.scrollIntoView({ block: "end", behavior: "smooth" });
+          });
+        }
+      });
+
+      panel.addEventListener("click", (e) => e.stopPropagation());
+      panel.addEventListener("change", refresh);
+      return refresh;
+    }
+
+    const vatMonthRefresh = setupVatDropdown("vatMonthBtn", "vatMonthPanel", "vat-month-cb", "Vyberte měsíce");
+    const vatYearRefresh  = setupVatDropdown("vatYearBtn",  "vatYearPanel",  "vat-year-cb",  "Vyberte rok");
+
+    // ── VAT "Vše" (Select All) logic ─────────────────────────────────────────
+    function setupVatSelectAll(selectAllId, checkboxClass, panelId, refreshFn) {
+      const selectAllCb = document.getElementById(selectAllId);
+      const panel       = document.getElementById(panelId);
+      if (!selectAllCb || !panel || !refreshFn) return;
+
+      // When "Vše" is toggled: set all checkboxes and refresh the label directly
+      selectAllCb.addEventListener("change", () => {
+        panel.querySelectorAll(`.${checkboxClass}`).forEach((cb) => {
+          cb.checked = selectAllCb.checked;
+        });
+        refreshFn();
+      });
+
+      // When individual checkboxes change: update "Vše" indeterminate state
+      panel.addEventListener("change", (e) => {
+        if (e.target === selectAllCb) return;
+        const all = [...panel.querySelectorAll(`.${checkboxClass}`)];
+        const checkedCount = all.filter((cb) => cb.checked).length;
+        selectAllCb.checked       = checkedCount === all.length;
+        selectAllCb.indeterminate = checkedCount > 0 && checkedCount < all.length;
+      });
+    }
+
+    setupVatSelectAll("vatMonthSelectAll", "vat-month-cb", "vatMonthPanel", vatMonthRefresh);
+    setupVatSelectAll("vatYearSelectAll",  "vat-year-cb",  "vatYearPanel",  vatYearRefresh);
+
+    // Close dropdowns when clicking outside
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".inv-dropdown-panel").forEach((p) => { p.classList.remove("open"); });
+      document.querySelectorAll(".inv-dropdown-btn").forEach((b) => { b.classList.remove("open"); });
+    });
+
     void loadDryRunSetting();
     void loadIbaSchedule();
     void loadDraftSchedule();
