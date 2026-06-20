@@ -38,13 +38,24 @@
   const marketCurrentLabel = document.getElementById("marketCurrentLabel");
   const marketRefreshButton = document.getElementById("marketRefreshButton");
   const marketRunPricingButton = document.getElementById("marketRunPricingButton");
+  const marketPickerSelect = document.getElementById("marketPickerSelect");
+  const marketSwitchButton = document.getElementById("marketSwitchButton");
   const marketList = document.getElementById("marketList");
   const marketSearchInput = document.getElementById("marketSearchInput");
   const marketSelectionCountBadge = document.getElementById("marketSelectionCount");
+  const accountSectionToggle = document.getElementById("accountSectionToggle");
+  const accountSectionBody = document.getElementById("accountSectionBody");
+  const accountCurrentLabel = document.getElementById("accountCurrentLabel");
+  const accountSwitchingIndicator = document.getElementById("accountSwitchingIndicator");
+  const accountSwitchingText = document.getElementById("accountSwitchingText");
+  const accountSelectorTree = document.getElementById("accountSelectorTree");
+  const accountRefreshButton = document.getElementById("accountRefreshButton");
   const notScPanel = document.getElementById("notScPanel");
   const toolsPanel = document.getElementById("toolsPanel");
   const violationsSectionToggle = document.getElementById("violationsSectionToggle");
   const violationsSectionBody = document.getElementById("violationsSectionBody");
+  const notifPrefsSectionToggle = document.getElementById("notifPrefsSectionToggle");
+  const notifPrefsSectionBody = document.getElementById("notifPrefsSectionBody");
   const violationsScheduleSaveButton = document.getElementById("violationsScheduleSaveButton");
   const violationsScheduleStatus = document.getElementById("violationsScheduleStatus");
   const pricingFixMinMaxCheck = document.getElementById("pricingFixMinMaxCheck");
@@ -491,6 +502,7 @@
   }
 
   function updateMarketSelectionCount(sel) {
+    if (!marketSelectionCountBadge) return;
     const count = Object.values(sel).filter(Boolean).length;
     marketSelectionCountBadge.textContent = count;
     marketSelectionCountBadge.style.display = count > 0 ? "" : "none";
@@ -506,7 +518,7 @@
   }
 
   function updateAllGroupHighlights(sel) {
-    marketList.querySelectorAll("[data-seller-group]").forEach((groupEl) => updateGroupHighlight(groupEl, sel));
+    marketList?.querySelectorAll("[data-seller-group]").forEach((groupEl) => updateGroupHighlight(groupEl, sel));
   }
 
   function renderRegionSubgroup(region, markets, activeRegional, tabId, selection) {
@@ -681,6 +693,17 @@
     }
   }
 
+  // Section group toggles (new grouped UI: Operativa, FBA, Financials, …)
+  document.querySelectorAll(".section-group-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const expanded = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", String(!expanded));
+      const bodyId = btn.id.replace("Toggle", "Body");
+      const body = document.getElementById(bodyId);
+      if (body) body.classList.toggle("collapsed", expanded);
+    });
+  });
+
   draftScrapingNoRetoolButton.addEventListener("click", startDraftScraping);
 
   draftSectionToggle.addEventListener("click", () => {
@@ -704,14 +727,48 @@
     const expanded = marketSectionToggle.getAttribute("aria-expanded") === "true";
     const next = !expanded;
     setSectionExpanded(marketSectionToggle, marketSectionBody, next);
-    if (next) void loadMarketData(false);
+    if (next) void loadMarketData(true);
   });
 
   marketRefreshButton.addEventListener("click", () => {
     void loadMarketData(true);
   });
 
-  marketRunPricingButton.addEventListener("click", async () => {
+  marketSwitchButton?.addEventListener("click", async () => {
+    if (!marketPickerSelect?.value) { setStatus("Select a market first."); return; }
+    let r;
+    try { r = JSON.parse(marketPickerSelect.value); } catch { setStatus("Invalid market selection."); return; }
+    const tab = await getActiveTab();
+    if (!tab?.id) { setStatus("No active tab."); return; }
+    setStatus("Switching market…");
+
+    // Store pending switch — content script picks it up if Amazon redirects to account-switcher
+    const marketLabel = marketPickerSelect.options[marketPickerSelect.selectedIndex]?.textContent?.trim() || null;
+    const cached = await loadMarketCache().catch(() => null);
+    const sellerName = cached?.current?.globalAccount?.label || cached?.current?.parentGlobalAccount?.label || null;
+    if (sellerName || marketLabel) {
+      await chrome.storage.local.set({
+        _pendingAccountSwitch: { sellerName, marketLabel, ts: Date.now() }
+      });
+    }
+
+    const url = buildMarketSwitchUrl(r);
+    await chrome.tabs.update(tab.id, { url }).catch((e) => { setStatus("Switch failed: " + e.message); return; });
+    window.close();
+  });
+
+  accountSectionToggle?.addEventListener("click", () => {
+    const expanded = accountSectionToggle.getAttribute("aria-expanded") === "true";
+    const next = !expanded;
+    setSectionExpanded(accountSectionToggle, accountSectionBody, next);
+    if (next) void loadAccountData(false);
+  });
+
+  accountRefreshButton?.addEventListener("click", () => {
+    void loadAccountData(true);
+  });
+
+  marketRunPricingButton?.addEventListener("click", async () => {
     const tab = await getActiveTab();
     if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
       setStatus("Open a Seller Central page first.");
@@ -1324,8 +1381,8 @@
     }
   });
 
-  violationsScheduleSaveButton.addEventListener("click", () => {
-    violationsScheduleStatus.textContent = "Scheduling not available yet";
+  violationsScheduleSaveButton?.addEventListener("click", () => {
+    if (violationsScheduleStatus) violationsScheduleStatus.textContent = "Scheduling not available yet";
     setStatus("Violations daily schedule is not implemented yet.");
   });
 
@@ -1470,10 +1527,10 @@
   }
 
   function applyMarketSearch() {
-    const q = (marketSearchInput.value || "").toLowerCase().trim();
+    const q = (marketSearchInput?.value || "").toLowerCase().trim();
 
     // Seller groups
-    marketList.querySelectorAll("[data-seller-group]").forEach((groupEl) => {
+    marketList?.querySelectorAll("[data-seller-group]").forEach((groupEl) => {
       const sellerName = groupEl.getAttribute("data-seller-group") || "";
       const sellerMatches = !q || sellerName.includes(q);
 
@@ -1499,16 +1556,16 @@
     });
 
     // Standalone markets (direct children, not inside a seller group)
-    marketList.querySelectorAll(":scope > [data-market-label]").forEach((el) => {
+    marketList?.querySelectorAll(":scope > [data-market-label]").forEach((el) => {
       const label = el.getAttribute("data-market-label") || "";
       el.style.display = !q || label.includes(q) ? "" : "none";
     });
   }
 
-  marketSearchInput.addEventListener("input", applyMarketSearch);
+  marketSearchInput?.addEventListener("input", applyMarketSearch);
 
   function renderMarketList(data, tabId, selection) {
-    marketList.innerHTML = "";
+    if (!marketList) return;
     const activeRegional = data.current?.regionalAccount || null;
     const standalone = (data.standaloneRegionalAccounts || []).filter((r) => !isPendingMarket(r));
     const globals = data.globalAccounts || [];
@@ -1559,13 +1616,13 @@
   }
 
   async function loadMarketData(forceRefresh = false) {
-    marketCurrentLabel.textContent = "Loading...";
-    marketList.innerHTML = "";
+    if (marketCurrentLabel) marketCurrentLabel.textContent = "Loading...";
+    if (marketPickerSelect) { marketPickerSelect.innerHTML = ""; marketPickerSelect.disabled = true; }
 
     const tab = await getActiveTab();
 
     if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
-      marketCurrentLabel.textContent = "—";
+      if (marketCurrentLabel) marketCurrentLabel.textContent = "—";
       setStatus("Open a Seller Central page first.");
       return;
     }
@@ -1576,26 +1633,274 @@
       try {
         const response = await ensureContentScriptAndSend(tab, { action: "GET_MARKET_DATA" });
         if (!response?.success) {
-          marketCurrentLabel.textContent = "—";
+          if (marketCurrentLabel) marketCurrentLabel.textContent = "—";
           setStatus(response?.error || "Failed to load markets.");
           return;
         }
         data = response.data;
         await saveMarketCache(data);
       } catch (error) {
-        marketCurrentLabel.textContent = "—";
+        if (marketCurrentLabel) marketCurrentLabel.textContent = "—";
         setStatus(error.message || "Error loading markets.");
         return;
       }
     }
 
-    const current = data.current?.regionalAccount?.label || "—";
-    marketCurrentLabel.textContent = `Current: ${current}`;
-    const selection = await loadMarketSelection();
-    renderMarketList(data, tab.id, selection);
-    applyMarketSearch();
+    const currentLabel = data.current?.regionalAccount?.label || "—";
+    const currentMkid = data.current?.regionalAccount?.ids?.mons_sel_mkid || "";
+    const currentMcid = data.current?.regionalAccount?.ids?.mons_sel_dir_mcid || "";
+    const accountLabel = data.current?.globalAccount?.label || data.current?.parentGlobalAccount?.label || "";
+    const displayLabel = accountLabel ? `${accountLabel} → ${currentLabel}` : currentLabel;
+    if (marketCurrentLabel) marketCurrentLabel.textContent = `Current: ${displayLabel}`;
+
+    const markets = data.standaloneRegionalAccounts || [];
+
+    // Populate <select> picker if present
+    if (marketPickerSelect) {
+      marketPickerSelect.innerHTML = "";
+      markets.forEach((r) => {
+        const opt = document.createElement("option");
+        opt.value = JSON.stringify({ ids: r.ids, domain: r.domain, globalAccountId: r.globalAccountId });
+        opt.textContent = r.label || r.domain || "—";
+        const mkidMatch = r.ids?.mons_sel_mkid === currentMkid;
+        const mcidMatch = !currentMcid || r.ids?.mons_sel_dir_mcid === currentMcid;
+        if (mkidMatch && mcidMatch) opt.selected = true;
+        marketPickerSelect.appendChild(opt);
+      });
+      marketPickerSelect.disabled = markets.length === 0;
+      if (markets.length === 0) {
+        const placeholder = document.createElement("option");
+        placeholder.textContent = "— no markets found —";
+        marketPickerSelect.appendChild(placeholder);
+      }
+    }
+
+    // Legacy list rendering (if marketList exists in older UI)
+    if (marketList) {
+      marketList.innerHTML = "";
+      const selection = await loadMarketSelection();
+      renderMarketList(data, tab.id, selection);
+      applyMarketSearch();
+    }
   }
 
+  // ─── Account Selector ──────────────────────────────────────────────────────
+
+  const ACCOUNT_LIST_ACCOUNTS_KEY = "_accountListAccounts";
+  const ACCOUNT_LIST_LOADING_KEY = "_accountListLoading";
+  const ACCOUNT_LIST_CACHE_TTL = 30 * 60 * 1000;
+
+  async function loadAccountData(forceRefresh = false) {
+    if (accountCurrentLabel) accountCurrentLabel.textContent = "Loading…";
+    if (accountSelectorTree) accountSelectorTree.innerHTML = "";
+    if (accountSwitchingIndicator) accountSwitchingIndicator.style.display = "none";
+
+    if (!forceRefresh) {
+      const stored = await chrome.storage.local.get(ACCOUNT_LIST_ACCOUNTS_KEY);
+      const cached = stored[ACCOUNT_LIST_ACCOUNTS_KEY];
+      if (cached?.accounts && Date.now() - (cached.cachedAt || 0) < ACCOUNT_LIST_CACHE_TTL) {
+        renderAccountTree(cached.accounts);
+        return;
+      }
+    }
+
+    const tab = await getActiveTab();
+    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+      if (accountCurrentLabel) accountCurrentLabel.textContent = "—";
+      setStatus("Open a Seller Central page first.");
+      return;
+    }
+
+    if (accountSelectorTree) {
+      accountSelectorTree.innerHTML = '<div style="padding:8px;color:#6b7280;font-size:12px;">Opening account switcher in background…</div>';
+    }
+
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        chrome.runtime.onMessage.removeListener(onMsg);
+        if (accountCurrentLabel) accountCurrentLabel.textContent = "Timeout — try refresh";
+        if (accountSelectorTree) accountSelectorTree.innerHTML = '<div style="color:#ef4444;font-size:12px;">Timeout loading accounts</div>';
+        resolve();
+      }, 90000);
+
+      function onMsg(msg) {
+        if (msg?.type !== "ACCOUNT_LIST_READY") return;
+        clearTimeout(timeout);
+        chrome.runtime.onMessage.removeListener(onMsg);
+        if (msg.error) {
+          if (accountCurrentLabel) accountCurrentLabel.textContent = "Error";
+          if (accountSelectorTree) accountSelectorTree.innerHTML = `<div style="color:#ef4444;font-size:12px;">${msg.error}</div>`;
+        } else if (msg.accounts) {
+          renderAccountTree(msg.accounts);
+        }
+        resolve();
+      }
+
+      chrome.runtime.onMessage.addListener(onMsg);
+
+      chrome.storage.local.get(ACCOUNT_LIST_LOADING_KEY).then((loading) => {
+        if (!loading[ACCOUNT_LIST_LOADING_KEY]) {
+          chrome.runtime.sendMessage({ type: "GET_ACCOUNT_LIST" }).catch(() => {});
+        }
+      }).catch(() => {
+        chrome.runtime.sendMessage({ type: "GET_ACCOUNT_LIST" }).catch(() => {});
+      });
+    });
+  }
+
+  // Common European market labels (matches Amazon account switcher labels)
+  const COMMON_MARKETS = ["Germany", "Poland", "France", "Italy", "Spain", "Netherlands", "Belgium",
+    "Sweden", "Czech Republic", "United Kingdom", "Turkey", "Egypt", "Saudi Arabia", "UAE"];
+
+  function renderAccountTree(accounts) {
+    if (!accountSelectorTree) return;
+    accountSelectorTree.innerHTML = "";
+
+    if (!accounts?.length) {
+      accountSelectorTree.innerHTML = '<div style="color:#6b7280;font-size:12px;">No accounts found</div>';
+      if (accountCurrentLabel) accountCurrentLabel.textContent = "—";
+      return;
+    }
+
+    const currentAccount = accounts.find((a) => a.isCurrent);
+    if (accountCurrentLabel) {
+      accountCurrentLabel.textContent = currentAccount ? `Current: ${currentAccount.label}` : "Current: —";
+    }
+
+    const rootAccounts = accounts.filter((a) => !a.parent);
+    const childAccounts = accounts.filter((a) => !!a.parent);
+
+    for (const root of rootAccounts) {
+      const children = childAccounts.filter((c) => c.parent === root.label);
+      const isAgency = root.hasChildren || children.length > 0;
+
+      const item = document.createElement("div");
+      item.style.cssText = "margin-bottom:4px;";
+
+      if (isAgency) {
+        const header = document.createElement("button");
+        header.type = "button";
+        header.style.cssText = "display:flex;align-items:center;gap:4px;width:100%;text-align:left;padding:5px 6px;background:#f3f4f6;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;color:#374151;";
+        const arrow = document.createElement("span");
+        arrow.className = "acct-arrow";
+        arrow.textContent = "▶";
+        header.appendChild(arrow);
+        header.appendChild(document.createTextNode(" " + root.label));
+        item.appendChild(header);
+
+        const childWrap = document.createElement("div");
+        childWrap.style.cssText = "display:none;margin-left:12px;border-left:2px solid #e5e7eb;padding-left:8px;";
+
+        header.addEventListener("click", () => {
+          const open = childWrap.style.display !== "none";
+          childWrap.style.display = open ? "none" : "block";
+          header.querySelector(".acct-arrow").textContent = open ? "▶" : "▼";
+        });
+
+        for (const child of children) {
+          childWrap.appendChild(buildAccountRow(child, child.label));
+        }
+
+        if (children.length === 0) {
+          const hint = document.createElement("div");
+          hint.textContent = "No sub-accounts found";
+          hint.style.cssText = "font-size:11px;color:#9ca3af;padding:4px 0;";
+          childWrap.appendChild(hint);
+        }
+
+        item.appendChild(childWrap);
+      } else {
+        item.appendChild(buildAccountRow(root, root.label));
+      }
+
+      accountSelectorTree.appendChild(item);
+    }
+  }
+
+  // Build one account row: label button + inline market picker (appears on click)
+  function buildAccountRow(account, sellerName) {
+    const wrap = document.createElement("div");
+    const isCurrent = account.isCurrent;
+
+    // Account label button
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.style.cssText = `display:block;width:100%;text-align:left;padding:5px 6px;margin:2px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;background:${isCurrent ? "#dbeafe" : "#fff"};color:${isCurrent ? "#1d4ed8" : "#374151"};`;
+    btn.textContent = (isCurrent ? "✓ " : "") + account.label;
+
+    // Inline market picker — hidden until account is clicked
+    const picker = document.createElement("div");
+    picker.style.cssText = "display:none;margin:4px 0 6px 0;padding:6px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;";
+
+    const pickerLabel = document.createElement("div");
+    pickerLabel.textContent = "Market:";
+    pickerLabel.style.cssText = "font-size:11px;color:#6b7280;margin-bottom:4px;";
+
+    const marketInput = document.createElement("input");
+    marketInput.type = "text";
+    marketInput.placeholder = "e.g. Germany, Poland…";
+    marketInput.style.cssText = "width:100%;box-sizing:border-box;padding:4px 6px;font-size:12px;border:1px solid #d1d5db;border-radius:3px;margin-bottom:6px;";
+
+    // Datalist with common markets
+    const dl = document.createElement("datalist");
+    dl.id = `acct-markets-${sellerName.replace(/\s+/g, "-")}`;
+    COMMON_MARKETS.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m;
+      dl.appendChild(opt);
+    });
+    marketInput.setAttribute("list", dl.id);
+
+    const switchBtn = document.createElement("button");
+    switchBtn.type = "button";
+    switchBtn.textContent = "▶ Přepnout";
+    switchBtn.style.cssText = "width:100%;padding:5px;background:#2563eb;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;";
+
+    switchBtn.addEventListener("click", () => {
+      const market = marketInput.value.trim() || null;
+      switchToAccount(sellerName, market);
+    });
+
+    // Also allow Enter key in market input
+    marketInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); switchBtn.click(); }
+    });
+
+    picker.appendChild(dl);
+    picker.appendChild(pickerLabel);
+    picker.appendChild(marketInput);
+    picker.appendChild(switchBtn);
+
+    btn.addEventListener("click", () => {
+      const open = picker.style.display !== "none";
+      picker.style.display = open ? "none" : "block";
+      if (!open) marketInput.focus();
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(picker);
+    return wrap;
+  }
+
+  async function switchToAccount(sellerLabel, marketLabel) {
+    console.log("[SellerTools popup] switchToAccount called: seller=%s market=%s", sellerLabel, marketLabel);
+    const tab = await getActiveTab();
+    if (!tab?.id) { setStatus("No active tab."); return; }
+
+    if (accountSwitchingIndicator) accountSwitchingIndicator.style.display = "flex";
+    if (accountSwitchingText) accountSwitchingText.textContent = `Přepínám na ${sellerLabel}${marketLabel ? " → " + marketLabel : ""}…`;
+
+    const payload = { sellerName: sellerLabel, marketLabel: marketLabel || null, ts: Date.now() };
+    console.log("[SellerTools popup] writing _pendingAccountSwitch:", JSON.stringify(payload));
+    await chrome.storage.local.set({ _pendingAccountSwitch: payload });
+    console.log("[SellerTools popup] storage written, navigating tab", tab.id, "to account-switcher");
+
+    const domain = new URL(tab.url).hostname;
+    await chrome.tabs.update(tab.id, { url: `https://${domain}/account-switcher/default/merchantMarketplace` });
+    window.close();
+  }
+
+  // ─── End Account Selector ──────────────────────────────────────────────────
 
   document.getElementById("violationsButton").addEventListener("click", async () => {
     setStatus("Starting...");
@@ -1614,6 +1919,135 @@
       setStatus(error.message || "Unexpected error.");
     }
   });
+
+  // ── Notification Preferences Email ──────────────────────────────────────────
+
+  function setupMarketDropdown(btnId, panelId, cbClass, labelId, selectAllId, onOpen) {
+    const btn = document.getElementById(btnId);
+    const panel = document.getElementById(panelId);
+    const label = document.getElementById(labelId);
+    if (!btn || !panel || !label) return () => {};
+    const refresh = () => {
+      const checked = [...panel.querySelectorAll(`.${cbClass}:checked`)];
+      label.textContent = checked.length === 0
+        ? "Select markets"
+        : checked.map((cb) => cb.dataset.code).join(", ");
+      const selectAll = document.getElementById(selectAllId);
+      if (selectAll) {
+        const total = panel.querySelectorAll(`.${cbClass}`).length;
+        selectAll.checked = checked.length === total && total > 0;
+        selectAll.indeterminate = checked.length > 0 && checked.length < total;
+      }
+    };
+    refresh();
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isOpen = panel.classList.contains("open");
+      document.querySelectorAll(".inv-dropdown-panel").forEach((p) => p.classList.remove("open"));
+      document.querySelectorAll(".inv-dropdown-btn").forEach((b) => b.classList.remove("open"));
+      if (!isOpen) { panel.classList.add("open"); btn.classList.add("open"); if (onOpen) onOpen(); }
+    });
+    panel.addEventListener("click", (e) => e.stopPropagation());
+    panel.addEventListener("change", (e) => {
+      const selectAll = document.getElementById(selectAllId);
+      if (selectAll && e.target === selectAll) {
+        panel.querySelectorAll(`.${cbClass}`).forEach((cb) => { cb.checked = selectAll.checked; });
+      }
+      refresh();
+    });
+    return refresh;
+  }
+
+  const refreshNotifPrefsDropdown = setupMarketDropdown(
+    "notifPrefsMarketBtn", "notifPrefsMarketPanel", "notif-prefs-market-cb",
+    "notifPrefsMarketLabel", "notifPrefsMarketSelectAll",
+    () => void notifPrefsOpenMarketDropdown()
+  );
+
+  let _notifPrefsSessionMarkets = null;
+
+  function notifPrefsRenderMarkets(markets, panel) {
+    panel.querySelectorAll("label:not(.inv-select-all-row), .notif-prefs-status").forEach((el) => el.remove());
+    markets.filter((r) => !isPendingMarket(r)).forEach((r) => {
+      const mkid = r.ids?.mons_sel_mkid || "";
+      if (!mkid) return;
+      const lbl = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.className = "notif-prefs-market-cb";
+      cb.dataset.mkid = mkid;
+      cb.dataset.label = r.label || mkid;
+      cb.dataset.code = r.label || mkid;
+      cb.checked = true;
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(` ${r.label || mkid}`));
+      panel.appendChild(lbl);
+    });
+    refreshNotifPrefsDropdown();
+  }
+
+  async function notifPrefsOpenMarketDropdown() {
+    const panel = document.getElementById("notifPrefsMarketPanel");
+    if (!panel) return;
+    if (_notifPrefsSessionMarkets) { notifPrefsRenderMarkets(_notifPrefsSessionMarkets, panel); return; }
+    let statusEl = panel.querySelector(".notif-prefs-status");
+    if (!statusEl) {
+      statusEl = document.createElement("div");
+      statusEl.className = "notif-prefs-status";
+      statusEl.style.cssText = "padding:8px 10px;color:#6b7280;font-size:12px;";
+      panel.appendChild(statusEl);
+    }
+    statusEl.textContent = "Loading markets…";
+    try {
+      const tab = await getActiveTab();
+      if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+        statusEl.textContent = "Open Seller Central first."; return;
+      }
+      let cached = await loadMarketCache();
+      if (!cached) {
+        const response = await ensureContentScriptAndSend(tab, { action: "GET_MARKET_DATA" });
+        if (response?.success && response.data) { await saveMarketCache(response.data); cached = response.data; }
+      }
+      if (!cached) { statusEl.textContent = "Could not load markets."; return; }
+      const markets = cached.standaloneRegionalAccounts || [];
+      if (!markets.length) { statusEl.textContent = "No markets found."; return; }
+      _notifPrefsSessionMarkets = markets;
+      notifPrefsRenderMarkets(markets, panel);
+    } catch (err) { statusEl.textContent = `Error: ${err.message}`; }
+  }
+
+  function notifPrefsGetSelectedMarkets() {
+    return [...document.querySelectorAll("#notifPrefsMarketPanel .notif-prefs-market-cb:checked")]
+      .map((cb) => ({ label: cb.dataset.label || "", code: cb.dataset.code || "" }))
+      .filter((m) => m.label);
+  }
+
+  notifPrefsSectionToggle.addEventListener("click", () => {
+    const expanded = notifPrefsSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(notifPrefsSectionToggle, notifPrefsSectionBody, !expanded);
+  });
+
+  document.getElementById("notifPrefsButton").addEventListener("click", async () => {
+    const email = document.getElementById("notifPrefsEmailInput").value.trim();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setStatus("Enter a valid email address."); return;
+    }
+    const markets = notifPrefsGetSelectedMarkets();
+    if (!markets.length) { setStatus("Select at least one market."); return; }
+    setStatus("Starting...");
+    let sellerName = null;
+    try {
+      const cached = await loadMarketCache();
+      sellerName = cached?.current?.globalAccount?.label || null;
+    } catch { /* ignore */ }
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "START_NOTIF_PREFS", email, markets, sellerName });
+      if (!response?.success) { setStatus(response?.error || "Unable to start."); return; }
+      setStatus("Opening preferences tab...");
+      window.close();
+    } catch (error) { setStatus(error.message || "Unexpected error."); }
+  });
+
+  // ── Pricing Fix ──────────────────────────────────────────────────────────────
 
   pricingFixRunButton.addEventListener("click", async () => {
     const fixMinMax = pricingFixMinMaxCheck.checked;

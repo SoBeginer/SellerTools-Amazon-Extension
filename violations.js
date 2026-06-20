@@ -4,7 +4,8 @@
   const DELAY_MS = 4000;
   const TARGET_REASONS = [
     "counterfeit without a test buy",
-    "trademark on product"
+    "trademark on product",
+    "product authenticity complaints",
   ];
 
   function sleep(ms) {
@@ -190,7 +191,82 @@
     });
   }
 
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function buildTxtLines(uniqueAsins, violations, asinSkuMap, asinOrderCount) {
+    return uniqueAsins.map((asin) => {
+      const violation = violations.find((entry) => entry.asin === asin);
+      const date = violation?.date ?? "N/A";
+      const sku = asinSkuMap[asin] ?? "N/A";
+      const rawCount = asinOrderCount[asin];
+      let sixtyPercent = "N/A";
+      if (rawCount && rawCount !== "N/A") {
+        const numericCount = parseInt(rawCount.replace(/[^0-9]/g, ""), 10);
+        if (!Number.isNaN(numericCount)) {
+          sixtyPercent = Math.ceil(numericCount * 0.6).toString();
+        }
+      }
+      return `ASIN:${asin} - SKU:${sku} - faktura vystavena před: ${date} - na faktuře alespoň ${sixtyPercent} ks`;
+    });
+  }
+
   function downloadFiles(taskState) {
+    const allResults = Array.isArray(taskState.violationsAllResults) ? taskState.violationsAllResults : [];
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const BOM = "﻿";
+
+    if (allResults.length > 0) {
+      log(`Generuji multi-market CSV (${allResults.length} trzich)...`);
+
+      const csvHeader = "Trh,ASIN,SKU,Datum violation,Typ violation,Pocet objednavek (365 dni)";
+      const csvRows = [];
+      for (const mr of allResults) {
+        for (const violation of mr.violations) {
+          csvRows.push([
+            escapeCsv(mr.marketLabel),
+            escapeCsv(violation.asin),
+            escapeCsv(mr.asinSkuMap[violation.asin] ?? "N/A"),
+            escapeCsv(violation.date),
+            escapeCsv(violation.reason),
+            escapeCsv(mr.asinOrderCount[violation.asin] ?? "N/A"),
+          ].join(","));
+        }
+      }
+
+      triggerDownload(
+        new Blob([BOM + [csvHeader, ...csvRows].join("\n")], { type: "text/csv;charset=utf-8;" }),
+        `amazon_violations_multi_${dateStr}.csv`
+      );
+
+      log("Generuji multi-market TXT soubor...");
+
+      const txtLines = [];
+      for (const mr of allResults) {
+        if (mr.uniqueAsins.length > 0) {
+          txtLines.push(`=== ${mr.marketLabel} ===`);
+          txtLines.push(...buildTxtLines(mr.uniqueAsins, mr.violations, mr.asinSkuMap, mr.asinOrderCount));
+          txtLines.push("");
+        }
+      }
+
+      triggerDownload(
+        new Blob([BOM + txtLines.join("\n")], { type: "text/plain;charset=utf-8;" }),
+        `amazon_violations_multi_${dateStr}.txt`
+      );
+
+      finish();
+      return;
+    }
+
     log("Generuji CSV soubor...");
 
     const csvHeader = "ASIN,SKU,Datum violation,Typ violation,Pocet objednavek (365 dni)";
@@ -202,49 +278,17 @@
       escapeCsv(taskState.asinOrderCount[violation.asin] ?? "N/A")
     ].join(","));
 
-    const csvBlob = new Blob(["\uFEFF" + [csvHeader, ...csvRows].join("\n")], {
-      type: "text/csv;charset=utf-8;"
-    });
-    const csvUrl = URL.createObjectURL(csvBlob);
-    const csvLink = document.createElement("a");
-    csvLink.href = csvUrl;
-    csvLink.download = `amazon_violations_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(csvLink);
-    csvLink.click();
-    document.body.removeChild(csvLink);
-    URL.revokeObjectURL(csvUrl);
+    triggerDownload(
+      new Blob([BOM + [csvHeader, ...csvRows].join("\n")], { type: "text/csv;charset=utf-8;" }),
+      `amazon_violations_${dateStr}.csv`
+    );
 
     log("Generuji TXT soubor...");
 
-    const txtLines = taskState.uniqueAsins.map((asin) => {
-      const violation = taskState.violations.find((entry) => entry.asin === asin);
-      const date = violation?.date ?? "N/A";
-      const sku = taskState.asinSkuMap[asin] ?? "N/A";
-      const rawCount = taskState.asinOrderCount[asin];
-      let sixtyPercent = "N/A";
-
-      if (rawCount && rawCount !== "N/A") {
-        const numericCount = parseInt(rawCount.replace(/[^0-9]/g, ""), 10);
-
-        if (!Number.isNaN(numericCount)) {
-          sixtyPercent = Math.ceil(numericCount * 0.6).toString();
-        }
-      }
-
-      return `ASIN:${asin} - SKU:${sku} - faktura vystavena před: ${date} - na faktuře alespoň ${sixtyPercent} ks`;
-    });
-
-    const txtBlob = new Blob(["\uFEFF" + txtLines.join("\n")], {
-      type: "text/plain;charset=utf-8;"
-    });
-    const txtUrl = URL.createObjectURL(txtBlob);
-    const txtLink = document.createElement("a");
-    txtLink.href = txtUrl;
-    txtLink.download = `amazon_violations_${new Date().toISOString().slice(0, 10)}.txt`;
-    document.body.appendChild(txtLink);
-    txtLink.click();
-    document.body.removeChild(txtLink);
-    URL.revokeObjectURL(txtUrl);
+    triggerDownload(
+      new Blob([BOM + buildTxtLines(taskState.uniqueAsins, taskState.violations, taskState.asinSkuMap, taskState.asinOrderCount).join("\n")], { type: "text/plain;charset=utf-8;" }),
+      `amazon_violations_${dateStr}.txt`
+    );
 
     finish();
   }

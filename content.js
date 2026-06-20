@@ -1,43 +1,48 @@
-(() => {
+﻿(() => {
+  const isAmazon = /amazon\./.test(window.location.hostname);
+  const isRetool = window.location.hostname === "expandoadmin.retool.com";
+  if (!isAmazon && !isRetool) return;
+
+  // ── Console log capture ──────────────────────────────────────────────────
+  // When enabled (via storage), intercepts console.log/warn/error and sends
+  // entries to background for download at the end of each feature run.
+  (function installLogCapture() {
+    const methods = ["log", "warn", "error"];
+    methods.forEach((method) => {
+      const original = console[method].bind(console);
+      console[method] = function (...args) {
+        original(...args);
+        chrome.storage.local.get("captureLogsEnabled").then((r) => {
+          if (!r.captureLogsEnabled) return;
+          const ts = new Date().toISOString().replace("T", " ").slice(0, 23);
+          const text = args.map((a) => {
+            try { return typeof a === "object" ? JSON.stringify(a) : String(a); }
+            catch { return String(a); }
+          }).join(" ");
+          chrome.runtime.sendMessage({
+            type: "LOG_ENTRY",
+            entry: `${ts} [${method.toUpperCase()}] ${text}`,
+          }).catch(() => {});
+        });
+      };
+    });
+  })();
+
   const draftsPathname = "/myinventory/inventory/views/drafts";
   const draftsSubview = "submitted-missing-info";
   const ibaSearchWaitMs = 25000;
   const ibaConfirmWaitMs = 15000;
   const ibaAutoStartDelayMs = 1500;
-  const ibaRetoolResultWaitMs = 10000;
+  const ibaRetoolResultWaitMs = 12000;  // max wait per attempt for a settled result
   const ibaRetoolPollMs = 250;
-  const ibaAmazonListUrl = "https://sellercentral.amazon.de/orders-v3/mfn/unshipped?orderType=IBA&orderStatus=unshipped&fulfillmentType=mfn&page=1&date-range=last-30";
+  const ibaRetoolInitDelayMs = 900;     // wait after UI found before first search (React init)
+  const ibaRetoolInputSettleMs = 450;   // wait after typing before clicking search (React debounce)
+  const ibaRetoolMaxRetries = 2;        // max retries per order before giving up
+  const ibaAmazonListUrl = "https://sellercentral.amazon.de/orders-v3/mfn/unshipped?orderType=IBA&orderStatus=unshipped&fulfillmentType=mfn&page=1&date-range=last-30&pageSize=250";
   const ibaAmazonStartUrl = `${ibaAmazonListUrl}&_ibaStart=1`;
   const ibaRetoolUrl = "https://expandoadmin.retool.com/apps/6bead31a-73e4-11ee-9733-d7e6a0480985/Fulfillment%20lookup";
   const draftFeedRetoolWaitMs = 25000;
   const dryRunStorageKey = "seller_extension_dry_run_v1";
-  const marketSwitcherEnabledStorageKey = "seller_extension_market_switcher_enabled_v1";
-  const marketSwitcherCacheKey = "seller_extension_market_switcher_cache_v1";
-  const marketSwitcherCacheTtlMs = 5 * 60 * 1000;
-  const marketFlagByDomain = {
-    "sellercentral.amazon.de": "🇩🇪",
-    "sellercentral.amazon.fr": "🇫🇷",
-    "sellercentral.amazon.it": "🇮🇹",
-    "sellercentral.amazon.es": "🇪🇸",
-    "sellercentral.amazon.co.uk": "🇬🇧",
-    "sellercentral.amazon.nl": "🇳🇱",
-    "sellercentral.amazon.pl": "🇵🇱",
-    "sellercentral.amazon.se": "🇸🇪",
-    "sellercentral.amazon.com": "🇺🇸",
-    "sellercentral.amazon.ca": "🇨🇦",
-    "sellercentral.amazon.com.mx": "🇲🇽",
-    "sellercentral.amazon.co.jp": "🇯🇵",
-    "sellercentral.amazon.com.au": "🇦🇺",
-    "sellercentral.amazon.ae": "🇦🇪",
-    "sellercentral.amazon.eg": "🇪🇬"
-  };
-  const marketFlagByMkid = {
-    "amzn1.mp.o.A28R8C7NBKEWEA": "🇮🇪",
-    "amzn1.mp.o.AMEN7PMS3EDWL": "🇧🇪"
-  };
-  let marketSwitcherObserver = null;
-  let marketSwitcherExpandedGroups = new Set();
-  let marketOutsideClickBound = false;
 
   if (window.__sellerExtensionContentInitialized) {
     return;
@@ -65,15 +70,6 @@
     try {
       const result = await chrome.storage.sync.get(dryRunStorageKey);
       return result[dryRunStorageKey] === true;
-    } catch {
-      return false;
-    }
-  }
-
-  async function isMarketSwitcherEnabled() {
-    try {
-      const result = await chrome.storage.sync.get(marketSwitcherEnabledStorageKey);
-      return result[marketSwitcherEnabledStorageKey] === true;
     } catch {
       return false;
     }
@@ -216,19 +212,16 @@
       return "START_QUEUE";
     }
 
-    if (url.hostname === "expandoadmin.retool.com" && url.searchParams.has("_iba")) {
-      return "RETOOL_SEARCH";
-    }
+    // RETOOL_SEARCH is detected via storage (see ibaRunCurrentPhase)
 
     if (url.searchParams.has("_ibaQueue")) {
       return "NEXT_IN_QUEUE";
     }
 
     if (
-      /^sellercentral\.amazon\./.test(url.hostname) &&
-      url.searchParams.get("_ibaStart") === "1" &&
+      /amazon\./.test(url.hostname) &&
       url.searchParams.get("orderType") === "IBA" &&
-      url.searchParams.get("date-range") === "last-30"
+      url.searchParams.get("_ibaStart") === "1"
     ) {
       return "COLLECT";
     }
@@ -258,33 +251,6 @@
     });
   }
 
-  function getMarketFlag(regionalAccount) {
-    const mkid = regionalAccount?.ids?.mons_sel_mkid;
-
-    if (mkid && marketFlagByMkid[mkid]) {
-      return marketFlagByMkid[mkid];
-    }
-
-    return marketFlagByDomain[regionalAccount?.domain] || "🌍";
-  }
-
-  async function loadMarketSwitcherCache() {
-    const result = await chrome.storage.session.get(marketSwitcherCacheKey);
-    return result[marketSwitcherCacheKey] && typeof result[marketSwitcherCacheKey] === "object"
-      ? result[marketSwitcherCacheKey]
-      : {};
-  }
-
-  async function saveMarketSwitcherCache(cache) {
-    await chrome.storage.session.set({
-      [marketSwitcherCacheKey]: cache
-    });
-  }
-
-  function buildMarketSwitcherCacheEntryKey(hostname, globalAccountId) {
-    return `${hostname}::${globalAccountId || "standalone"}`;
-  }
-
   async function marketFetchJson(path) {
     const response = await fetch(path, {
       credentials: "include"
@@ -297,62 +263,127 @@
     return response.json();
   }
 
-  async function marketFetchCurrentAccount() {
-    return {
-      hostname: window.location.hostname,
-      current: await marketFetchJson("/account-switcher/global-and-regional-account/merchantMarketplace")
-    };
-  }
+  async function marketFetchCurrentAccountMarkets() {
+    // Step 1: get current context (which seller + which market is active)
+    const currentResponse = await marketFetchJson(
+      "/account-switcher/global-and-regional-account/merchantMarketplace"
+    );
+    marketLog("API currentResponse:", JSON.stringify(currentResponse));
 
-  async function marketFetchAllAccounts() {
-    const currentResponse = await marketFetchJson("/account-switcher/global-and-regional-account/merchantMarketplace");
-    const globalResponse = await marketFetchJson("/account-switcher/global-accounts");
-    const standaloneResponse = await marketFetchJson("/account-switcher/regional-accounts/merchantMarketplace?vendorCentralMigration=T1");
-    const globalAccounts = Array.isArray(globalResponse?.globalAccounts) ? globalResponse.globalAccounts : [];
-    const regionalAccountsByGlobalId = {};
+    const globalAccountId = currentResponse?.globalAccount?.id;
+    const parentGlobalAccountId = currentResponse?.parentGlobalAccount?.id;
+    const delegationContext = currentResponse?.globalAccount?.delegationContext || "";
+    const delegationContextWithTarget = currentResponse?.globalAccount?.delegationContextWithTargetPartnerAccount || "";
+    const currentMcid = currentResponse?.regionalAccount?.ids?.mons_sel_dir_mcid || "";
+    const currentMkid = currentResponse?.regionalAccount?.ids?.mons_sel_mkid || "";
 
-    for (const globalAccount of globalAccounts) {
+    let markets = [];
+
+    function parseRegionalItems(regionalData, fallbackGlobalId) {
+      const items = Array.isArray(regionalData)
+        ? regionalData
+        : Array.isArray(regionalData?.regionalAccounts)
+          ? regionalData.regionalAccounts
+          : [];
+      return items
+        .filter((r) => r?.ids?.mons_sel_mkid)
+        .map((r) => ({
+          label: r.label || r.domain || "—",
+          domain: r.domain || window.location.hostname,
+          ids: {
+            mons_sel_mkid: r.ids.mons_sel_mkid,
+            mons_sel_dir_mcid: r.ids.mons_sel_dir_mcid || currentMcid,
+          },
+          globalAccountId: r.globalAccountId || fallbackGlobalId,
+        }));
+    }
+
+    async function tryFetchRegional(globalId, extra = {}) {
+      const params = new URLSearchParams({ globalAccountId: globalId, ...extra });
+      const data = await marketFetchJson(
+        `/account-switcher/regional-accounts/merchantMarketplace?${params}`
+      );
+      marketLog(`regional API [${JSON.stringify(extra)}] response:`, JSON.stringify(data));
+      return parseRegionalItems(data, globalAccountId);
+    }
+
+    // Step 2: try progressively more specific combinations until we get markets
+    const attempts = [
+      // Plain globalAccountId (works for standalone accounts)
+      () => tryFetchRegional(globalAccountId),
+      // With plain delegationContext (works for agency sub-accounts)
+      delegationContext
+        ? () => tryFetchRegional(globalAccountId, { delegationContext })
+        : null,
+      // With delegationContextWithTargetPartnerAccount
+      delegationContextWithTarget
+        ? () => tryFetchRegional(globalAccountId, { delegationContext: delegationContextWithTarget })
+        : null,
+      // Parent global account ID (last resort)
+      parentGlobalAccountId
+        ? () => tryFetchRegional(parentGlobalAccountId)
+        : null,
+      // Parent ID + plain delegationContext
+      (parentGlobalAccountId && delegationContext)
+        ? () => tryFetchRegional(parentGlobalAccountId, { delegationContext })
+        : null,
+    ].filter(Boolean);
+
+    for (const attempt of attempts) {
+      if (markets.length > 0) break;
       try {
-        const regionalResponse = await marketFetchJson(`/account-switcher/regional-accounts/merchantMarketplace?globalAccountId=${encodeURIComponent(globalAccount.id)}&vendorCentralMigration=T1`);
-        regionalAccountsByGlobalId[globalAccount.id] = Array.isArray(regionalResponse?.regionalAccounts) ? regionalResponse.regionalAccounts : [];
-      } catch {
-        regionalAccountsByGlobalId[globalAccount.id] = [];
+        markets = await attempt();
+        marketLog("markets found:", markets.length);
+      } catch (err) {
+        marketLog("attempt failed:", err.message);
       }
+    }
+
+    // Step 3: fallback — show at least the current market from the URL / first API response
+    if (markets.length === 0) {
+      marketLog("falling back to current market only");
+      const cur = currentResponse?.regionalAccount;
+      const urlParams = new URLSearchParams(window.location.search);
+      markets = cur ? [{
+        label: cur.label || currentResponse?.globalAccount?.label || "Current market",
+        domain: window.location.hostname,
+        ids: {
+          mons_sel_mkid: currentMkid || urlParams.get("mons_sel_mkid") || "",
+          mons_sel_dir_mcid: currentMcid || urlParams.get("mons_sel_dir_mcid") || "",
+        },
+        globalAccountId: globalAccountId || urlParams.get("mons_sel_dir_paid") || "",
+      }] : [];
     }
 
     return {
       hostname: window.location.hostname,
       current: currentResponse || {},
-      globalAccounts,
-      standaloneRegionalAccounts: Array.isArray(standaloneResponse?.regionalAccounts)
-        ? standaloneResponse.regionalAccounts.filter((account) => !account.globalAccountId)
-        : [],
-      regionalAccountsByGlobalId
+      globalAccounts: [],
+      standaloneRegionalAccounts: markets,
+      regionalAccountsByGlobalId: {},
     };
   }
 
-  async function marketGetAccountData() {
-    const currentData = await marketFetchCurrentAccount();
-    const cacheKey = buildMarketSwitcherCacheEntryKey(currentData.hostname, currentData.current?.globalAccount?.id || "");
-    const cache = await loadMarketSwitcherCache();
-    const cachedEntry = cache[cacheKey];
-    const now = Date.now();
 
-    if (cachedEntry && typeof cachedEntry === "object" && cachedEntry.expiresAt > now) {
-      return {
-        ...cachedEntry.data,
-        current: currentData.current,
-        hostname: currentData.hostname
-      };
-    }
+  // Extract the best available label from an account object (Amazon uses varying field names)
+  function accountLabel(obj) {
+    return obj?.label || obj?.name || obj?.accountName || obj?.displayName || obj?.sellerName || null;
+  }
 
-    const freshData = await marketFetchAllAccounts();
-    cache[cacheKey] = {
-      expiresAt: now + marketSwitcherCacheTtlMs,
-      data: freshData
+  async function accountFetchAll() {
+    const currentResp = await marketFetchJson(
+      "/account-switcher/global-and-regional-account/merchantMarketplace"
+    );
+
+    const currentGlobal = currentResp?.globalAccount || null;
+    const parentGlobal  = currentResp?.parentGlobalAccount || null;
+    const mkid = currentResp?.regionalAccount?.ids?.mons_sel_mkid || "";
+
+    return {
+      current:  currentGlobal ? { id: currentGlobal.id, label: accountLabel(currentGlobal) } : null,
+      parentId: parentGlobal?.id || null,
+      mkid,
     };
-    await saveMarketSwitcherCache(cache);
-    return freshData;
   }
 
   function marketGetSwitchUrl(regionalAccount) {
@@ -375,249 +406,6 @@
   function marketIsRegionalActive(regionalAccount, activeRegionalAccount) {
     return regionalAccount?.ids?.mons_sel_mkid === activeRegionalAccount?.ids?.mons_sel_mkid &&
       regionalAccount?.ids?.mons_sel_dir_mcid === activeRegionalAccount?.ids?.mons_sel_dir_mcid;
-  }
-
-  function marketRemoveSwitcher() {
-    document.getElementById("seller-extension-market-switcher")?.remove();
-  }
-
-  function marketFindAnchor() {
-    const header = document.querySelector(".dropdown-account-switcher-header");
-    const label = document.querySelector(".dropdown-account-switcher-header-label");
-
-    if (header && label) {
-      return {
-        header,
-        label
-      };
-    }
-
-    if (header) {
-      return {
-        header,
-        label: null
-      };
-    }
-
-    return null;
-  }
-
-  function marketClosePopover() {
-    document.getElementById("seller-extension-market-switcher-popover")?.remove();
-  }
-
-  function marketCreateButton() {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Markets";
-    button.style.height = "24px";
-    button.style.padding = "0 8px";
-    button.style.border = "1px solid rgba(255,255,255,0.28)";
-    button.style.borderRadius = "6px";
-    button.style.background = "rgba(255,255,255,0.14)";
-    button.style.color = "#ffffff";
-    button.style.fontSize = "11px";
-    button.style.fontWeight = "600";
-    button.style.cursor = "pointer";
-    button.style.lineHeight = "1";
-    button.style.whiteSpace = "nowrap";
-    button.style.position = "relative";
-    button.style.zIndex = "2147483646";
-    button.style.pointerEvents = "auto";
-    return button;
-  }
-
-  function marketRenderRegionalItem(regionalAccount, activeRegionalAccount) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.style.display = "flex";
-    item.style.alignItems = "center";
-    item.style.justifyContent = "space-between";
-    item.style.gap = "8px";
-    item.style.width = "100%";
-    item.style.padding = "8px 10px";
-    item.style.border = "0";
-    item.style.borderTop = "1px solid #e5e7eb";
-    item.style.background = marketIsRegionalActive(regionalAccount, activeRegionalAccount) ? "#eff6ff" : "#ffffff";
-    item.style.color = marketIsRegionalActive(regionalAccount, activeRegionalAccount) ? "#1d4ed8" : "#111827";
-    item.style.textAlign = "left";
-    item.style.cursor = "pointer";
-    item.innerHTML = `
-      <span style="display:flex;align-items:center;gap:8px;min-width:0;">
-        <span>${getMarketFlag(regionalAccount)}</span>
-        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${regionalAccount.label || "Unnamed marketplace"}</span>
-      </span>
-      <span style="font-size:11px;color:${marketIsRegionalActive(regionalAccount, activeRegionalAccount) ? "#1d4ed8" : "#6b7280"};">${regionalAccount.domain || "current"}</span>
-    `;
-    item.addEventListener("click", () => {
-      window.location.href = marketGetSwitchUrl(regionalAccount);
-    });
-    return item;
-  }
-
-  function marketRenderPopover(data, button) {
-    marketClosePopover();
-
-    const popover = document.createElement("div");
-    popover.id = "seller-extension-market-switcher-popover";
-    popover.style.position = "absolute";
-    popover.style.top = "calc(100% + 8px)";
-    popover.style.right = "0";
-    popover.style.width = "360px";
-    popover.style.maxHeight = "420px";
-    popover.style.overflow = "auto";
-    popover.style.border = "1px solid #d8dee8";
-    popover.style.borderRadius = "10px";
-    popover.style.background = "#ffffff";
-    popover.style.boxShadow = "0 10px 28px rgba(15, 23, 42, 0.18)";
-    popover.style.zIndex = "2147483647";
-
-    const activeRegionalAccount = data.current?.regionalAccount || null;
-    const standalone = data.standaloneRegionalAccounts || [];
-    const globals = data.globalAccounts || [];
-
-    standalone.forEach((regionalAccount) => {
-      popover.appendChild(marketRenderRegionalItem(regionalAccount, activeRegionalAccount));
-    });
-
-    globals.forEach((globalAccount) => {
-      const section = document.createElement("section");
-      const toggle = document.createElement("button");
-      const expanded = marketSwitcherExpandedGroups.has(globalAccount.id) || globalAccount.id === data.current?.globalAccount?.id;
-
-      toggle.type = "button";
-      toggle.style.display = "flex";
-      toggle.style.alignItems = "center";
-      toggle.style.justifyContent = "space-between";
-      toggle.style.width = "100%";
-      toggle.style.padding = "10px";
-      toggle.style.border = "0";
-      toggle.style.borderTop = "1px solid #e5e7eb";
-      toggle.style.background = "#ffffff";
-      toggle.style.color = "#111827";
-      toggle.style.fontWeight = "600";
-      toggle.style.cursor = "pointer";
-      toggle.setAttribute("aria-expanded", String(expanded));
-      toggle.innerHTML = `
-        <span>${globalAccount.label || "Unnamed seller"}</span>
-        <span style="font-size:12px;color:#6b7280;">&#9662;</span>
-      `;
-
-      const body = document.createElement("div");
-      body.hidden = !expanded;
-
-      (data.regionalAccountsByGlobalId?.[globalAccount.id] || []).forEach((regionalAccount) => {
-        body.appendChild(marketRenderRegionalItem(regionalAccount, activeRegionalAccount));
-      });
-
-      toggle.addEventListener("click", () => {
-        const nextExpanded = toggle.getAttribute("aria-expanded") !== "true";
-        toggle.setAttribute("aria-expanded", String(nextExpanded));
-        body.hidden = !nextExpanded;
-
-        if (nextExpanded) {
-          marketSwitcherExpandedGroups.add(globalAccount.id);
-        } else {
-          marketSwitcherExpandedGroups.delete(globalAccount.id);
-        }
-      });
-
-      section.append(toggle, body);
-      popover.appendChild(section);
-    });
-
-    button.parentElement.appendChild(popover);
-  }
-
-  async function marketEnsureSwitcherButton() {
-    if (!/^sellercentral\.amazon\./.test(window.location.hostname)) {
-      marketRemoveSwitcher();
-      marketClosePopover();
-      return;
-    }
-
-    const anchor = marketFindAnchor();
-
-    if (!anchor || document.getElementById("seller-extension-market-switcher")) {
-      return;
-    }
-
-    const wrapper = document.createElement("div");
-    wrapper.id = "seller-extension-market-switcher";
-    wrapper.style.position = "absolute";
-    wrapper.style.display = "inline-flex";
-    wrapper.style.alignItems = "center";
-    wrapper.style.top = "50%";
-    wrapper.style.right = "-72px";
-    wrapper.style.transform = "translateY(-50%)";
-    wrapper.style.zIndex = "2147483646";
-    wrapper.style.pointerEvents = "auto";
-
-    const button = marketCreateButton();
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-
-      const existingPopover = document.getElementById("seller-extension-market-switcher-popover");
-
-      if (existingPopover) {
-        marketClosePopover();
-        return;
-      }
-
-      try {
-        button.disabled = true;
-        button.textContent = "Loading...";
-        const data = await marketGetAccountData();
-        marketRenderPopover(data, button);
-      } catch (error) {
-        marketLog("Failed to load switcher data.", error);
-      } finally {
-        button.disabled = false;
-        button.textContent = "Markets";
-      }
-    });
-
-    wrapper.appendChild(button);
-
-    if (window.getComputedStyle(anchor.header).position === "static") {
-      anchor.header.style.position = "relative";
-    }
-    anchor.header.style.overflow = "visible";
-    anchor.header.appendChild(wrapper);
-  }
-
-  async function marketApplySwitcherState(enabled) {
-    if (!enabled) {
-      marketRemoveSwitcher();
-      marketClosePopover();
-      return;
-    }
-
-    await marketEnsureSwitcherButton();
-
-    if (!marketSwitcherObserver) {
-      marketSwitcherObserver = new MutationObserver(async () => {
-        if (await isMarketSwitcherEnabled()) {
-          await marketEnsureSwitcherButton();
-        }
-      });
-
-      marketSwitcherObserver.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-      });
-    }
-
-    if (!marketOutsideClickBound) {
-      marketOutsideClickBound = true;
-      document.addEventListener("click", (event) => {
-        const wrapper = document.getElementById("seller-extension-market-switcher");
-
-        if (wrapper && !wrapper.contains(event.target)) {
-          marketClosePopover();
-        }
-      });
-    }
   }
 
   const pricingIssuePathname = "/myinventory/inventory";
@@ -1946,35 +1734,86 @@
 
   function ibaCollectOrderIds() {
     const orderIds = new Set();
+    const orderIdRe = /\b(\d{3}-\d{7}-\d{7})\b/g;
 
-    document.querySelectorAll('a[href*="/orders-v3/order/"]').forEach((link) => {
-      const href = link.getAttribute("href") || link.href || "";
-      const match = href.match(/\d+-\d+-\d+/);
-
-      if (match) {
-        orderIds.add(match[0]);
-      }
+    // Scan all anchor hrefs
+    document.querySelectorAll("a[href]").forEach((link) => {
+      const href = link.getAttribute("href") || "";
+      let m;
+      while ((m = orderIdRe.exec(href)) !== null) orderIds.add(m[1]);
     });
+
+    // Also scan visible text in the page body (catches IDs in table cells, spans, etc.)
+    const bodyText = document.body ? document.body.innerText : "";
+    let m;
+    while ((m = orderIdRe.exec(bodyText)) !== null) orderIds.add(m[1]);
 
     return [...orderIds];
   }
 
-  async function ibaRunCollectPhase() {
-    const orderIds = ibaCollectOrderIds();
+  async function ibaWaitForOrderLinks(timeoutMs = 5000) {
+    const pollMs = 300;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (/\b\d{3}-\d{7}-\d{7}\b/.test(document.body?.innerText || "")) return true;
+      await ibaSleep(pollMs);
+    }
+    return false;
+  }
 
+  async function ibaWaitForStableOrderIds(maxWaitMs = 8000, stablePollMs = 800) {
+    // Wait for first orders to appear, then keep polling until count stops growing
+    await ibaWaitForOrderLinks(5000);
+
+    let prev = -1;
+    let stableRounds = 0;
+    const deadline = Date.now() + maxWaitMs;
+
+    while (Date.now() < deadline) {
+      const ids = ibaCollectOrderIds();
+      if (ids.length > 0 && ids.length === prev) {
+        stableRounds++;
+        if (stableRounds >= 2) {
+          ibaLog(`Order count stable at ${ids.length}.`);
+          return ids;
+        }
+      } else {
+        stableRounds = 0;
+      }
+      prev = ids.length;
+      await ibaSleep(stablePollMs);
+    }
+
+    const final = ibaCollectOrderIds();
+    ibaLog(`Collect timeout reached, returning ${final.length} orders.`);
+    return final;
+  }
+
+  async function ibaRunCollectPhase() {
+    const amazonBase = new URL(window.location.href).origin;
+
+    ibaLog("Waiting 5s for full DOM load…");
+    await ibaSleep(5000);
+    ibaLog("Waiting for orders in DOM…");
+    const orderIds = await ibaWaitForStableOrderIds();
     ibaLog(`Collected ${orderIds.length} IBA orders.`);
 
     if (orderIds.length === 0) {
-      alert("No unshipped IBA orders found on this page.");
+      chrome.runtime.sendMessage({ type: "IBA_DONE", result: "no_orders" }).catch(() => {});
+      const multiMode = await new Promise(r => chrome.storage.local.get("_ibaMultiClientMode", d => r(d._ibaMultiClientMode)));
+      if (!multiMode) alert("No unshipped IBA orders found.");
       return;
     }
 
-    const payload = ibaEncodeState({
-      orders: orderIds,
-      amazonBase: new URL(ibaAmazonListUrl).origin
+    await new Promise((resolve) => {
+      chrome.storage.local.set({
+        _ibaOrders: { orders: orderIds, amazonBase },
+        _ibaSearchPending: true
+      }, resolve);
     });
 
-    ibaNavigate(`${ibaRetoolUrl}?_iba=${encodeURIComponent(payload)}`);
+    ibaLog(`Saved ${orderIds.length} orders to storage, navigating to Retool.`);
+    ibaNavigate(ibaRetoolUrl);
   }
 
   function ibaFindSearchButton() {
@@ -2123,14 +1962,24 @@
     const startedAt = Date.now();
     const previousSignature = ibaGetRetoolStateSignature(previousState);
 
+    // Phase 1: Wait for ANY change from the pre-search state.
+    // This confirms a new search cycle has started (Retool cleared/reloaded results).
+    // Without this, old results still in the DOM can be mistaken for a new result.
     while (Date.now() - startedAt < timeoutMs) {
-      const currentState = ibaGetRetoolSearchState(orderId);
-      const currentSignature = ibaGetRetoolStateSignature(currentState);
-
-      if (currentState.status !== "pending" && currentSignature !== previousSignature) {
-        return currentState;
+      const state = ibaGetRetoolSearchState(orderId);
+      if (ibaGetRetoolStateSignature(state) !== previousSignature) {
+        break;
       }
+      await ibaSleep(ibaRetoolPollMs);
+    }
 
+    // Phase 2: Wait for a settled, non-pending result.
+    // Once the state has changed, wait until Retool finishes loading the result.
+    while (Date.now() - startedAt < timeoutMs) {
+      const state = ibaGetRetoolSearchState(orderId);
+      if (state.status !== "pending") {
+        return state;
+      }
       await ibaSleep(ibaRetoolPollMs);
     }
 
@@ -2138,25 +1987,66 @@
   }
 
   async function ibaRunRetoolSearchPhase() {
-    const url = new URL(window.location.href);
-    const state = ibaDecodeState(url.searchParams.get("_iba") || "");
+    // Clear the pending flag immediately so we don't re-trigger on Retool navigations
+    await new Promise((resolve) => {
+      chrome.storage.local.remove("_ibaSearchPending", resolve);
+    });
+
+    const state = await new Promise((resolve) => {
+      chrome.storage.local.get("_ibaOrders", (data) => resolve(data._ibaOrders || null));
+    });
 
     if (!state?.orders?.length || !state.amazonBase) {
-      ibaLog("Missing _iba payload.");
+      ibaLog("Missing _ibaOrders in storage.");
       return;
     }
 
+    ibaLog(`Loaded ${state.orders.length} orders from storage.`);
+
     const input = await ibaWaitForElement("#inputOrderId--0", ibaSearchWaitMs);
     const searchButton = await ibaWaitForSearchButton(ibaSearchWaitMs);
+
+    // Give Retool time to fully mount React handlers before the first interaction.
+    // Without this delay, the first click() may be ignored by an uninitialised component.
+    ibaLog("Retool UI ready — waiting for React initialisation…");
+    await ibaSleep(ibaRetoolInitDelayMs);
 
     const results = [];
 
     for (const orderId of state.orders) {
       ibaLog(`Searching Retool for ${orderId}.`);
-      const previousState = ibaGetRetoolSearchState(orderId);
-      ibaSetReactInputValue(input, orderId);
-      searchButton.click();
-      const searchState = await ibaWaitForRetoolResult(orderId, previousState, ibaRetoolResultWaitMs);
+
+      let searchState = null;
+
+      for (let attempt = 0; attempt <= ibaRetoolMaxRetries; attempt++) {
+        if (attempt > 0) {
+          ibaLog(`Retrying ${orderId} (attempt ${attempt + 1}/${ibaRetoolMaxRetries + 1})…`);
+          await ibaSleep(1200);
+        }
+
+        // Capture state BEFORE typing so we can detect any change.
+        const previousState = ibaGetRetoolSearchState(orderId);
+
+        // Focus the input first — React controlled inputs often need this
+        // to register subsequent programmatic changes correctly.
+        input.focus();
+        input.dispatchEvent(new Event("focus", { bubbles: true }));
+
+        ibaSetReactInputValue(input, orderId);
+
+        // Wait for React to process the new input value before clicking.
+        await ibaSleep(ibaRetoolInputSettleMs);
+
+        searchButton.click();
+
+        searchState = await ibaWaitForRetoolResult(orderId, previousState, ibaRetoolResultWaitMs);
+
+        if (searchState.status !== "pending") {
+          break; // got a definitive answer — stop retrying
+        }
+
+        ibaLog(`No result for ${orderId} after attempt ${attempt + 1} — ${attempt < ibaRetoolMaxRetries ? "will retry" : "giving up"}.`);
+      }
 
       if (searchState.status === "found" && searchState.result) {
         ibaLog(`Found tracking for ${orderId}: ${searchState.result.t} / ${searchState.result.c || "carrier-missing"}`);
@@ -2169,7 +2059,7 @@
         continue;
       }
 
-      ibaLog(`Retool result timed out for ${orderId}.`);
+      ibaLog(`Retool result timed out for ${orderId} after ${ibaRetoolMaxRetries + 1} attempt(s) — skipping.`);
     }
 
     ibaLog(`Retool returned ${results.length} tracking results.`);
@@ -2310,13 +2200,6 @@
       return;
     }
 
-    const approved = await ibaShowQueueApprovalDialog(queue);
-
-    if (!approved) {
-      ibaLog("User cancelled queue confirmation.");
-      return;
-    }
-
     ibaNavigate(ibaBuildConfirmShipmentUrl(window.location.origin, queue, 0));
   }
 
@@ -2411,11 +2294,28 @@
       return;
     }
 
-    alert("IBA shipment automation complete.");
+    chrome.runtime.sendMessage({ type: "IBA_DONE", result: "complete" }).catch(() => {});
+    const multiMode = await new Promise(r => chrome.storage.local.get("_ibaMultiClientMode", d => r(d._ibaMultiClientMode)));
+    if (!multiMode) alert("IBA shipment automation complete.");
     ibaNavigate(ibaAmazonListUrl);
   }
 
   async function ibaRunCurrentPhase() {
+    const url = new URL(window.location.href);
+
+    // Retool: detect pending IBA search via storage (URL params are stripped by Retool's SPA router)
+    if (url.hostname === "expandoadmin.retool.com") {
+      const pending = await new Promise((resolve) => {
+        chrome.storage.local.get("_ibaSearchPending", (d) => resolve(!!d._ibaSearchPending));
+      });
+      if (pending) {
+        ibaLog("Detected pending IBA search from storage.");
+        await ibaSleep(ibaAutoStartDelayMs);
+        await ibaRunRetoolSearchPhase();
+        return;
+      }
+    }
+
     const phase = ibaGetPhase();
 
     if (!phase) {
@@ -2432,11 +2332,6 @@
 
     if (phase === "COLLECT") {
       await ibaRunCollectPhase();
-      return;
-    }
-
-    if (phase === "RETOOL_SEARCH") {
-      await ibaRunRetoolSearchPhase();
       return;
     }
 
@@ -2805,15 +2700,222 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Account switcher automation — shared by message handler and storage self-trigger
+
+  async function accountSelectRun(sellerName, marketLabel) {
+    console.log("[SellerTools] accountSelectRun: seller=%s market=%s", sellerName, marketLabel);
+
+    function findAccountBtn(label) {
+      return [...document.querySelectorAll("button.full-page-account-switcher-account-details")]
+        .find((btn) => {
+          const text = btn.querySelector("span.full-page-account-switcher-account-label")
+            ?.textContent?.trim() || "";
+          return text === label || text.startsWith(label + " ") || text.startsWith(label + " ");
+        });
+    }
+
+    // Step 1: wait for kat-input shadow DOM (up to 5s — may run before Vue fully inits)
+    const t0 = Date.now();
+    const searchInput = await new Promise((resolve) => {
+      const deadline = t0 + 5000;
+      const tick = () => {
+        const input = document.querySelector("kat-input")?.shadowRoot?.querySelector("input");
+        if (input) { resolve(input); return; }
+        if (Date.now() > deadline) { resolve(null); return; }
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
+    console.log("[SellerTools] accountSelectRun: kat-input ready in", Date.now() - t0, "ms, found:", !!searchInput);
+
+    if (searchInput && sellerName) {
+      searchInput.focus();
+      searchInput.value = sellerName;
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+      searchInput.dispatchEvent(new Event("change", { bubbles: true }));
+      const searchBtn = document.querySelector("kat-button.search-button");
+      if (searchBtn) searchBtn.click();
+      console.log("[SellerTools] accountSelectRun: typed seller name, search btn clicked:", !!searchBtn);
+    }
+
+    // Step 2: poll for seller row (up to 6s)
+    const sellerBtn = sellerName ? await new Promise((resolve) => {
+      const deadline = Date.now() + 6000;
+      const tick = () => {
+        const btn = findAccountBtn(sellerName);
+        if (btn) { resolve(btn); return; }
+        if (Date.now() > deadline) { resolve(null); return; }
+        setTimeout(tick, 250);
+      };
+      tick();
+    }) : null;
+    console.log("[SellerTools] accountSelectRun: seller btn found:", !!sellerBtn);
+
+    if (!sellerBtn) {
+      const labels = [...document.querySelectorAll("span.full-page-account-switcher-account-label")]
+        .map(el => el.textContent?.trim()).filter(Boolean);
+      console.log("[SellerTools] accountSelectRun: visible labels:", JSON.stringify(labels));
+      return { success: false, error: `Seller "${sellerName}" not found` };
+    }
+
+    sellerBtn.click();
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Step 3: click market row if specified
+    if (marketLabel) {
+      const marketBtn = findAccountBtn(marketLabel);
+      if (marketBtn) {
+        console.log("[SellerTools] accountSelectRun: clicking market:", marketLabel);
+        marketBtn.click();
+        await new Promise((r) => setTimeout(r, 500));
+      } else {
+        console.log("[SellerTools] accountSelectRun: market row not found for:", marketLabel);
+      }
+    }
+
+    // Step 4: confirm
+    const confirmBtn = document.querySelector("kat-button[data-test='confirm-selection']");
+    if (confirmBtn) {
+      console.log("[SellerTools] accountSelectRun: clicking confirm");
+      confirmBtn.click();
+      return { success: true };
+    }
+    return { success: false, error: "Confirm button not found" };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.action === "GET_MARKET_DATA") {
-      // Use marketFetchAllAccounts directly — marketGetAccountData uses
-      // chrome.storage.session which is unavailable in content script context
-      marketFetchAllAccounts()
+    if (message?.action === "GET_ACCOUNT_DATA") {
+      accountFetchAll()
         .then((data) => sendResponse({ success: true, data }))
         .catch((error) => sendResponse({ success: false, error: error.message }));
-      return true; // Keep channel open for async response
+      return true;
+    }
+
+    if (message?.action === "GET_MARKET_DATA") {
+      marketFetchCurrentAccountMarkets()
+        .then((data) => sendResponse({ success: true, data }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+
+    if (message?.action === "GET_PAGE_TYPE") {
+      // Detect what kind of SC page we're on — more reliable than URL matching
+      const url = window.location.href;
+
+      // Login / step-up auth page
+      const isLogin = url.includes("/ap/signin") || url.includes("/ap/mfa")
+        || !!document.getElementById("ap_email")
+        || !!document.getElementById("auth-mfa-form");
+
+      // Account switcher page — check DOM, not just URL
+      const isAccountSwitcher = url.includes("/account-switcher/")
+        || !!document.querySelector("input[placeholder*='Search for an account' i]")
+        || !!([...document.querySelectorAll("h1,h2,h3")].find(el => /select an account/i.test(el.textContent)))
+        || !!([...document.querySelectorAll("button,input[type='submit']")].find(el => /select\s*account/i.test(el.textContent || el.value || "")));
+
+      // Payments / disburse page
+      const isDisburse = url.includes("/payments/disburse")
+        || !!document.getElementById("request-transfer-button");
+
+      const type = isDisburse ? "disburse"
+                 : isAccountSwitcher ? "account-switcher"
+                 : isLogin ? "login"
+                 : "other";
+
+      sendResponse({ type, url });
+      return;
+    }
+
+    if (message?.action === "DO_ACCOUNT_SELECT") {
+      const { sellerName, marketLabel } = message;
+      accountSelectRun(sellerName, marketLabel)
+        .then((result) => sendResponse(result || { success: false }))
+        .catch((e) => sendResponse({ success: false, error: e.message }));
+      return true;
+    }
+    if (message?.action === "DO_DISBURSEMENT") {
+      (async () => {
+        try {
+          // Wait for KAT custom elements to register
+          if (window.customElements?.whenDefined) {
+            await Promise.race([
+              customElements.whenDefined("kat-button"),
+              new Promise((r) => setTimeout(r, 8000)),
+            ]);
+          }
+          // Extra settle time for the page to fully render
+          await new Promise((r) => setTimeout(r, 1500));
+
+          const btn = document.getElementById("request-transfer-button");
+          if (!btn) {
+            sendResponse({ success: false, error: "Button #request-transfer-button not found" });
+            return;
+          }
+
+          // KAT button — click via shadow DOM
+          const innerBtn = btn.shadowRoot?.querySelector("button");
+          if (!innerBtn) {
+            sendResponse({ success: false, error: "Shadow DOM inner button not found" });
+            return;
+          }
+          if (innerBtn.disabled || btn.getAttribute("disabled") === "true") {
+            sendResponse({ success: false, error: "Button is disabled — disbursement may have already been requested or is unavailable" });
+            return;
+          }
+
+          // Read disbursement amount from the page before clicking
+          const amountSelectors = [
+            "#disbursement-amount",
+            "#disburse-amount",
+            "[data-testid='disbursement-amount']",
+            ".disburse-amount",
+            "#transfer-amount",
+            // Amazon SC sometimes uses a table with label/value pairs
+            "td.transfer-amount",
+            // Fallback: find a cell next to a label containing "transfer" or "disburse"
+          ];
+          let amount = null;
+          for (const sel of amountSelectors) {
+            const el = document.querySelector(sel);
+            if (el && el.textContent.trim()) { amount = el.textContent.trim(); break; }
+          }
+          if (!amount) {
+            // Generic fallback: look for currency pattern near the button
+            const allText = [...document.querySelectorAll("td, span, div")]
+              .map((el) => el.textContent.trim())
+              .find((t) => /^[-+]?[\d.,]+\s*€|EUR|GBP|£|\$|USD/.test(t));
+            if (allText) amount = allText;
+          }
+
+          innerBtn.click();
+
+          // Poll for success or error alert (max 15s)
+          const result = await new Promise((resolve) => {
+            const deadline = Date.now() + 15000;
+            const iv = setInterval(() => {
+              const ok  = document.getElementById("disburse-now-submit-success-alert");
+              const err = document.getElementById("disburse-now-submit-error-alert");
+              if (ok && ok.offsetParent !== null) {
+                clearInterval(iv);
+                resolve({ success: true, amount });
+              } else if (err && err.offsetParent !== null) {
+                clearInterval(iv);
+                resolve({ success: false, error: err.textContent?.trim() || "Disbursement failed" });
+              } else if (Date.now() > deadline) {
+                clearInterval(iv);
+                resolve({ success: false, error: "Timeout — no result received within 15s" });
+              }
+            }, 300);
+          });
+
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({ success: false, error: e.message });
+        }
+      })();
+      return true;
     }
 
     if (message?.action === "IBA_START") {
@@ -2844,10 +2946,289 @@
       return;
     }
 
-    if (message?.action === "MARKET_SWITCHER_TOGGLE") {
-      void marketApplySwitcherState(message.enabled === true);
+    if (message?.action === "SCRAPE_INVENTORY_AGE") {
+      (async () => {
+        const tabId = message.tabId;
+        try {
+          if (!window.location.href.includes("/inventoryplanning/manageinventoryhealth")) {
+            sendResponse({ success: false, error: "Wrong page." });
+            return;
+          }
+
+          // Check for CAPTCHA / interstitial
+          if (document.getElementById("ap_email") || document.getElementById("auth-mfa-form") || /captcha/i.test(document.title)) {
+            await chrome.runtime.sendMessage({ type: "INVENTORY_AGE_ROWS", tabId, rows: [], hasNextPage: false, marketCode: "??" });
+            sendResponse({ success: false, error: "Amazon requested verification — scan aborted." });
+            return;
+          }
+
+          // Wait for table to load (max 15s)
+          const tableReady = await new Promise(resolve => {
+            const deadline = Date.now() + 15000;
+            const check = () => {
+              const hasRows = document.querySelector("kat-table-row ipv2-product-details") || document.querySelector("ipv2-product-details");
+              if (hasRows) { resolve(true); return; }
+              if (Date.now() > deadline) { resolve(false); return; }
+              setTimeout(check, 400);
+            };
+            check();
+          });
+
+          if (!tableReady) {
+            // Empty inventory is valid
+            const emptyMsg = document.querySelector("kat-table")?.innerText || "";
+            if (/no result|no item|leer|keine/i.test(emptyMsg) || !document.querySelector("kat-table")) {
+              await chrome.runtime.sendMessage({ type: "INVENTORY_AGE_ROWS", tabId, rows: [], hasNextPage: false, marketCode: "??" });
+              sendResponse({ success: true });
+              return;
+            }
+            sendResponse({ success: false, error: "Table did not load within 15s." });
+            return;
+          }
+
+          function parseProductDetails(pdText) {
+            const lines = (pdText || "").split("\n").map(s => s.trim()).filter(Boolean);
+            const out = { title: lines[0] || "" };
+            for (const line of lines) {
+              const m = line.match(/^(ASIN|FNSKU|SKU|UPC\/EAN|UPC|EAN)\s*:\s*(.+)$/i);
+              if (m) out[m[1].toUpperCase().replace("/", "_")] = m[2].trim();
+            }
+            return out;
+          }
+
+          function scrapeInventoryRows() {
+            const rows = [...document.querySelectorAll("kat-table-row")]
+              .filter(r => r.querySelector("ipv2-product-details"));
+
+            return rows.map(row => {
+              const cells = [...row.querySelectorAll("kat-table-cell")];
+              const byClass = prefix => cells.find(c =>
+                (c.className || "").split(/\s+/).some(cl => cl.startsWith(prefix))
+              );
+
+              const productCell = byClass("product_details") || cells[1];
+              const ageCell     = byClass("inventory_age")   || cells[6];
+              const levelCell   = byClass("inventory_level");
+              const salesCell   = byClass("sales_summary");
+              const excessCell  = byClass("est_overstock");
+              const aisCell     = byClass("est_ais");
+              const actionCell  = byClass("actions") || byClass("fixed-action-column");
+
+              const pd = parseProductDetails(productCell?.innerText);
+
+              const ageBuckets = {};
+              (ageCell?.innerText || "").split("\n").forEach(line => {
+                const m = line.match(/^([\d+\-\u2013]+):(\d+)\s*$/);
+                if (m) ageBuckets[m[1].replace(/\u2013/g, "-")] = Number(m[2]);
+              });
+              const totalUnits = Object.values(ageBuckets).reduce((a, b) => a + b, 0);
+
+              const onHandMatch = (levelCell?.innerText || "").match(/On-hand[^\d]*(\d+)/i);
+              const recMinMatch = (levelCell?.innerText || "").match(/Recommended min\. level[^\d]*(\d+)\s*\|\s*(\d+)\s*DoS/i);
+
+              return {
+                asin: pd.ASIN || "",
+                sku: pd.SKU || "",
+                fnsku: pd.FNSKU || "",
+                title: pd.title || "",
+                ageBuckets,
+                totalUnits,
+                onHand: onHandMatch ? Number(onHandMatch[1]) : null,
+                recommendedMinUnits: recMinMatch ? Number(recMinMatch[1]) : null,
+                recommendedMinDoS:   recMinMatch ? Number(recMinMatch[2]) : null,
+                excessUnits: Number((excessCell?.innerText || "0").trim()) || 0,
+                estAisTotal: (aisCell?.innerText || "").replace(/^Total:\s*/, "").trim(),
+                recommendedAction: (actionCell?.innerText || "").trim(),
+                sellThroughRaw: byClass("sell_through")?.innerText.trim() || "",
+                salesSummaryRaw: salesCell?.innerText.trim() || "",
+                feePerUnitRaw: byClass("est_fee_per_unit_sold")?.innerText.trim() || "",
+                yourPriceRaw: byClass("your_price")?.innerText.trim() || "",
+              };
+            });
+          }
+
+          // ── Local log collector — avoids async LOG_ENTRY race with finalizeInventoryAgeScan ──
+          const scanLog = [];
+          const ts = () => new Date().toISOString().replace("T", " ").slice(0, 23);
+          const sLog  = (...a) => { console.log(...a);  scanLog.push(`${ts()} [LOG]   ${a.join(" ")}`); };
+          const sWarn = (...a) => { console.warn(...a); scanLog.push(`${ts()} [WARN]  ${a.join(" ")}`); };
+          const sErr  = (...a) => { console.error(...a);scanLog.push(`${ts()} [ERROR] ${a.join(" ")}`); };
+
+          // ── Virtual-scroll reveal loop ────────────────────────────────────────
+          // kat-table uses virtual rendering: only ~20 visible rows rendered at once.
+          // Scroll to the last rendered row repeatedly to trigger lazy load of more.
+          const totalItems = parseInt(
+            document.querySelector("kat-pagination")?.getAttribute("total-items") || "0", 10
+          );
+          sLog(`[InventoryAge] total-items attr: ${totalItems}`);
+
+          chrome.storage.local.set({ _inventoryAgeProgress: {
+            active: true, phase: "scrape", totalItems, rowsSoFar: 0,
+          } }).catch(() => {});
+
+          // Scroll loop: keep scrolling until we have all items or no new rows appear
+          const scrollDeadline = Date.now() + 60000;
+          let stableCount = 0;
+          let lastRendered = 0;
+
+          while (Date.now() < scrollDeadline) {
+            const rendered = document.querySelectorAll("kat-table-row ipv2-product-details").length;
+
+            if (totalItems > 0 && rendered >= totalItems) {
+              sLog(`[InventoryAge] all ${rendered} rows rendered`);
+              break;
+            }
+
+            if (rendered === lastRendered) {
+              stableCount++;
+              if (stableCount >= 4) {
+                sLog(`[InventoryAge] row count stable at ${rendered} — stopping scroll`);
+                break;
+              }
+            } else {
+              stableCount = 0;
+              lastRendered = rendered;
+            }
+
+            // Scroll last rendered row into view to trigger next batch
+            const allRendered = document.querySelectorAll("kat-table-row ipv2-product-details");
+            if (allRendered.length > 0) {
+              allRendered[allRendered.length - 1].scrollIntoView({ behavior: "instant", block: "end" });
+            }
+
+            chrome.storage.local.set({ _inventoryAgeProgress: {
+              active: true, phase: "scrape", totalItems, rowsSoFar: rendered,
+            } }).catch(() => {});
+
+            await new Promise(r => setTimeout(r, 600));
+          }
+
+          let allRows = scrapeInventoryRows();
+          sLog(`[InventoryAge] scrape complete: ${allRows.length} rows (total-items: ${totalItems})`);
+
+          const tldMap = { de:'DE','co.uk':'GB',fr:'FR',it:'IT',es:'ES',nl:'NL',pl:'PL',se:'SE',com:'US','com.tr':'TR','com.be':'BE',ae:'AE',sa:'SA',sg:'SG','co.jp':'JP','in':'IN','com.au':'AU','com.mx':'MX',ca:'CA','com.br':'BR' };
+          const tld = window.location.hostname.replace(/^.*?amazon\./, '');
+          const mktCode = tldMap[tld] || tld.toUpperCase() || "??";
+          sLog(`[InventoryAge] scan complete: ${allRows.length} rows, market: ${mktCode}`);
+
+          const bgResp = await chrome.runtime.sendMessage({
+            type: "INVENTORY_AGE_ROWS", tabId,
+            rows: allRows,
+            hasNextPage: false,
+            marketCode: mktCode,
+            scanLog,
+          });
+          sendResponse({ success: true, action: bgResp?.action });
+        } catch (error) {
+          console.error("[SellerTools] SCRAPE_INVENTORY_AGE error:", error);
+          await chrome.runtime.sendMessage({ type: "INVENTORY_AGE_ROWS", tabId, rows: [], hasNextPage: false, marketCode: "??" }).catch(() => {});
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
     }
+
   });
+
+  // ── Brand Scanner ──────────────────────────────────────────────────────────
+  // Each brand gets its own tab opened by background.js with ?s=BrandName in URL.
+  // This content script auto-detects that param on load, waits for table, extracts.
+
+  const BRAND_SCANNER_PATH = "/performance/account/health/product-policies";
+
+  function brandLog(...args) { console.log("[BrandScanner]", ...args); }
+
+  (function brandScannerAutoRun() {
+    if (!window.location.pathname.startsWith(BRAND_SCANNER_PATH)) return;
+
+    const brandParam = new URLSearchParams(window.location.search).get("s");
+    if (!brandParam) return;
+
+    const brand = decodeURIComponent(brandParam);
+    brandLog("Auto-run for brand:", brand);
+
+    brandWaitForTableRows(12000).then(() => {
+      const rows = brandExtractRows();
+      brandLog("Sending result — rows:", rows.length);
+      chrome.runtime.sendMessage({ type: "BRAND_SCANNER_PAGE_RESULT", brand, rows });
+    });
+  })();
+
+  function brandPageIsReady() {
+    // Violations present
+    if (document.querySelector("[class*='ahd-product-policy-table-row']")) return true;
+    // Explicit "no violations" message
+    if (document.body?.innerText?.includes("Zero policy violation warnings")) return true;
+    return false;
+  }
+
+  async function brandWaitForTableRows(timeoutMs) {
+    const sleep = ms => new Promise(r => window.setTimeout(r, ms));
+    await sleep(600); // let React mount
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (brandPageIsReady()) {
+        await sleep(300); // brief settle
+        return;
+      }
+      await sleep(200);
+    }
+    brandLog("Timeout waiting for table rows or zero-state");
+  }
+
+  function brandExtractRows() {
+    const allRows = Array.from(document.querySelectorAll("[class*='ahd-product-policy-table-row']"));
+    // Keep only top-level rows — skip any row that is nested inside another matching row
+    const tableRows = allRows.filter(
+      row => !row.parentElement?.closest("[class*='ahd-product-policy-table-row']")
+    );
+    brandLog("Found top-level table rows:", tableRows.length, "(total matched:", allRows.length, ")");
+
+    // Collect by reason — keep the highest SKU count seen
+    // (same reason can appear twice: once expanded with count, once collapsed with 0)
+    const byReason = new Map();
+
+    for (const row of tableRows) {
+      const link = row.querySelector("a");
+      if (!link) continue;
+      const reason = link.innerText?.trim();
+      if (!reason) continue;
+
+      // SKU count can be inside nested child elements — use full innerText of the row.
+      const rowText = row.innerText || "";
+      const skuMatch = rowText.match(/(\d[\d,.]*)\s+SKUs?\s+impacted/i);
+      const skus = skuMatch ? parseInt(skuMatch[1].replace(/[,.]/g, ""), 10) : 0;
+
+      const existing = byReason.get(reason);
+      if (existing === undefined || skus > existing) {
+        byReason.set(reason, skus);
+      }
+    }
+
+    const results = Array.from(byReason.entries()).map(([reason, skus]) => ({ reason, skus }));
+    brandLog("Extracted unique rows:", results.length);
+    return results;
+  }
+
+  // Auto-run account switcher automation from storage — triggered when popup stores _pendingAccountSwitch
+  if (window.location.href.includes("/account-switcher/")) {
+    (async () => {
+      try {
+        console.log("[SellerTools] account-switcher: content script active, waiting 1.5s for Vue…");
+        await new Promise((r) => setTimeout(r, 1500));
+        const { _pendingAccountSwitch: pending } = await chrome.storage.local.get("_pendingAccountSwitch");
+        console.log("[SellerTools] account-switcher: _pendingAccountSwitch =", JSON.stringify(pending));
+        if (!pending) { console.log("[SellerTools] account-switcher: no pending switch, stopping"); return; }
+        if (Date.now() - (pending.ts || 0) > 60000) { console.log("[SellerTools] account-switcher: pending expired"); return; }
+        await chrome.storage.local.remove("_pendingAccountSwitch");
+        console.log("[SellerTools] account-switcher: starting accountSelectRun");
+        await accountSelectRun(pending.sellerName, pending.marketLabel);
+      } catch (e) {
+        console.error("[SellerTools] account-switcher auto-trigger error:", e);
+      }
+    })();
+  }
 
   if (pricingIsTargetPage()) {
     const sessionState = pricingGetSessionState();
@@ -2862,12 +3243,9 @@
     }
   }
 
-  void notifyBackgroundWhenReady();
-  void isMarketSwitcherEnabled().then((enabled) => {
-    return marketApplySwitcherState(enabled);
-  }).catch((error) => {
-    marketLog("Failed to initialize switcher state.", error);
-  });
+  if (isAmazon) {
+    void notifyBackgroundWhenReady();
+  }
   void ibaRunCurrentPhase().catch((error) => {
     ibaLog("Automation failed.", error);
   });

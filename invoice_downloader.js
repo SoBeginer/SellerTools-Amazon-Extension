@@ -262,9 +262,11 @@
 
   // ─── Process rows sequentially ────────────────────────────────────────────────
 
-  const seenUrls     = new Set();
-  const zipFiles     = []; // collected for ZIP mode
-  let   downloadCount = 0;
+  const seenUrls          = new Set();
+  const zipFiles          = []; // collected for ZIP mode
+  let   downloadCount      = 0;
+  let   invoiceDownCount   = 0;
+  let   creditNoteDownCount = 0;
 
   for (let i = 0; i < matchingRows.length; i++) {
     const row       = matchingRows[i];
@@ -305,6 +307,7 @@
       }
 
       downloadCount++;
+      if (isCreditNote(row)) creditNoteDownCount++; else invoiceDownCount++;
       await sleep(500);
 
     } catch (err) {
@@ -323,8 +326,8 @@
   // ─── Cleanup and report done ──────────────────────────────────────────────────
 
   chrome.storage.local.remove("_invoiceDownloaderParams").catch(() => {});
-  log(`Done — ${downloadCount}/${matchingRows.length} invoice(s) queued.`);
-  chrome.runtime.sendMessage({ type: "INVOICE_DOWNLOAD_DONE", count: downloadCount });
+  log(`Done — ${downloadCount}/${matchingRows.length} invoice(s) queued (${invoiceDownCount} faktur, ${creditNoteDownCount} dobropisů).`);
+  chrome.runtime.sendMessage({ type: "INVOICE_DOWNLOAD_DONE", count: downloadCount, invoices: invoiceDownCount, creditNotes: creditNoteDownCount });
 
   } finally {
     _marker.remove(); // always remove guard, even on early return or error

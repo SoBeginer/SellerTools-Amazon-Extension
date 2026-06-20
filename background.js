@@ -1,4 +1,4 @@
-const TASK_CONFIG = {
+﻿const TASK_CONFIG = {
   draftScraping: {
     pageType: "drafts",
     relativePath: "/myinventory/inventory/views/drafts?page=1&pageSize=250&sort=last_updated&subview=submitted-missing-info",
@@ -6,7 +6,15 @@ const TASK_CONFIG = {
   },
   violationsExport: {
     relativePath: "/performance/account/health/product-policies?t=intel",
+    policyPaths: [
+      "/performance/account/health/product-policies?t=intel",
+      "/performance/account/health/product-policies?t=auth",
+    ],
     scriptFile: "violations.js"
+  },
+  notifPrefsEmail: {
+    relativePath: "/notifications/preferences",
+    scriptFile: "notification_preferences.js"
   }
 };
 const MULTI_MARKET_QUEUE_KEY = "seller_extension_multi_market_queue_v1";
@@ -29,30 +37,38 @@ const VAT_REPORT_PENDING_PARAMS_KEY = "_vatReportPendingParams";
 const PRICE_CHANGE_QUEUE_KEY = "_priceChangeQueue";
 const PRICE_CHANGE_PROGRESS_KEY = "_priceChangeProgress";
 const SHIPPING_TEMPLATE_LIST_KEY = "_shippingTemplateList";
+const CONSOLE_LOG_KEY = "seller_extension_console_log_v1";
 const SHIPPING_TEMPLATES_PATH = "/sbr#shipping_templates";
+const SPC_MARKET_LOAD_QUEUE_KEY = "_spcMarketLoadQueue";
+const DELETE_QUEUE_KEY = "_templateDeleteQueue";
+const DELETE_PROGRESS_KEY = "_templateDeleteProgress";
+const INVENTORY_AGE_QUEUE_KEY = "_inventoryAgeQueue";
+const INVENTORY_AGE_PROGRESS_KEY = "_inventoryAgeProgress";
+const INVENTORY_AGE_RESULTS_KEY = "_inventoryAgeResults";
+const INVENTORY_AGE_PATH = "/inventoryplanning/manageinventoryhealth";
+const SPP_ASSIGN_PROGRESS_KEY = "_sppAssignProgress";
+const SPP_ASSIGN_LOG_KEY = "_sppAssignLog";
+const SPP_DOMAIN = "solutionproviderportal.amazon.com";
+let sppAssignStopRequested = false;
+const IBA_MULTI_PROGRESS_KEY = "_ibaMultiProgress";
+const IBA_MULTI_STATE_KEY = "_ibaMultiState";
+const IBA_MULTI_CLIENT_MODE_KEY = "_ibaMultiClientMode";
+const ACCOUNT_LIST_LOADING_KEY = "_accountListLoading";
+const ACCOUNT_LIST_ACCOUNTS_KEY = "_accountListAccounts";
+let bgScrapingAccounts = false;
+
+function getMarketCodeFromOrigin(origin) {
+  try {
+    const host = new URL(origin).hostname; // sellercentral.amazon.XX
+    if (host.endsWith(".co.uk")) return "GB";
+    if (host.endsWith(".com.be")) return "BE";
+    if (host.endsWith(".com.tr")) return "TR";
+    const tld = host.split(".").pop().toUpperCase();
+    return tld || "??";
+  } catch (_) { return "??"; }
+}
 const DRAFT_PARALLEL_TAB_COUNT = 1;
-const SELLER_CENTRAL_URL_PATTERNS = [
-  "https://sellercentral.amazon.ae/*",
-  "https://sellercentral.amazon.ca/*",
-  "https://sellercentral.amazon.co.jp/*",
-  "https://sellercentral.amazon.co.uk/*",
-  "https://sellercentral.amazon.com.au/*",
-  "https://sellercentral.amazon.com.br/*",
-  "https://sellercentral.amazon.com.mx/*",
-  "https://sellercentral.amazon.com.tr/*",
-  "https://sellercentral.amazon.com/*",
-  "https://sellercentral.amazon.de/*",
-  "https://sellercentral.amazon.eg/*",
-  "https://sellercentral.amazon.es/*",
-  "https://sellercentral.amazon.fr/*",
-  "https://sellercentral.amazon.in/*",
-  "https://sellercentral.amazon.it/*",
-  "https://sellercentral.amazon.nl/*",
-  "https://sellercentral.amazon.pl/*",
-  "https://sellercentral.amazon.sa/*",
-  "https://sellercentral.amazon.se/*",
-  "https://sellercentral.amazon.sg/*"
-];
+const SELLER_CENTRAL_URL_PATTERNS = ["<all_urls>"];
 
 const taskStateByTabId = new Map();
 const scriptInjectedTabs = new Set();
@@ -251,6 +267,7 @@ async function setVatReportProgress(progress) {
 
 async function injectVatReportDownloader(tabId, params) {
   await chrome.storage.local.set({ [VAT_REPORT_PARAMS_KEY]: params });
+  await injectConsoleInterceptor(tabId);
   await chrome.scripting.executeScript({
     target: { tabId },
     files: ["vat_report_downloader.js"]
@@ -262,6 +279,48 @@ async function injectShippingPriceChanger(tabId) {
     target: { tabId },
     files: ["shipping_price_changer.js"],
   });
+}
+
+async function injectConsoleInterceptor(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      if (window.__extensionLogBuffer) return;
+      window.__extensionLogBuffer = [];
+      const _ts = () => new Date().toISOString().replace("T", " ").slice(0, 23);
+      ["log", "warn", "error"].forEach((m) => {
+        const orig = console[m];
+        console[m] = function (...args) {
+          orig.apply(console, args);
+          const line = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+          window.__extensionLogBuffer.push(`[${_ts()}] [${m.toUpperCase()}] ${line}`);
+        };
+      });
+    },
+  });
+}
+
+async function maybeDownloadConsoleLog(tabId, featureName) {
+  const r = await chrome.storage.local.get(CONSOLE_LOG_KEY);
+  if (r[CONSOLE_LOG_KEY] !== true) return;
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (fname) => {
+        const lines = window.__extensionLogBuffer || [];
+        window.__extensionLogBuffer = [];
+        if (!lines.length) return null;
+        const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        return { url, filename: `${fname}_${ts}.log` };
+      },
+      args: [featureName],
+    });
+    if (result?.result?.url) {
+      chrome.downloads.download({ url: result.result.url, filename: result.result.filename, conflictAction: "uniquify" });
+    }
+  } catch (_) { /* tab may be gone */ }
 }
 
 // Inject a MAIN-world script that reads Amazon's Backbone template models
@@ -336,6 +395,7 @@ async function injectMainWorldTemplateCapture(tabId) {
 async function injectInvoiceDownloader(tabId, params) {
   // Store params in local storage — readable by the isolated-world script
   await chrome.storage.local.set({ _invoiceDownloaderParams: params });
+  await injectConsoleInterceptor(tabId);
 
   // Step 1: inject window.open interceptor into MAIN world via func (Chrome 95+).
   // Dispatches a document CustomEvent that isolated world listens to.
@@ -374,7 +434,7 @@ const draftRunsById = new Map();
 let runningDraftRunId = null;
 
 function encodeState(payload) {
-  return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  return btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(payload))));
 }
 
 function getDefaultIbaSchedule() {
@@ -658,6 +718,438 @@ async function runScheduledIbaStart() {
   });
 }
 
+// ─── Account list background scraper ─────────────────────────────────────────
+
+// Helper: scrape current account rows as plain objects (sync, no side effects)
+function bgAccountScrapeRows(tabId, knownLabels) {
+  return chrome.scripting.executeScript({
+    target: { tabId },
+    func: (known) => {
+      return [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+        .map(row => {
+          const ft = row.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+          const lbl = ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+          return { label: lbl, isCurrent: /\(current\)/i.test(ft), className: row.className };
+        })
+        .filter(a => a.label && !known.includes(a.label));
+    },
+    args: [knownLabels || []],
+  }).then(([r]) => r?.result || []).catch(() => []);
+}
+
+// Helper: click one account row by label (sync)
+function bgAccountClickRow(tabId, label) {
+  return chrome.scripting.executeScript({
+    target: { tabId },
+    func: (lbl) => {
+      for (const row of document.querySelectorAll(".full-page-account-switcher-account-details")) {
+        const txt = (row.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "")
+          .replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+        if (txt === lbl) { row.click(); return true; }
+      }
+      return false;
+    },
+    args: [label],
+  }).catch(() => {});
+}
+
+async function bgScrapeAccounts(domain, parentId, mkid) {
+  if (bgScrapingAccounts) return;
+  bgScrapingAccounts = true;
+  await chrome.storage.local.set({ [ACCOUNT_LIST_LOADING_KEY]: true });
+
+  let bgTab = null;
+  try {
+    const accounts = new Map();
+
+    // ── APPROACH 1: Direct API call from background (no tab, no DOM scraping) ──
+    // Background service worker has credentials access via host_permissions <all_urls>.
+    // /account-switcher/global-and-regional-account/merchantMarketplace returns
+    // globalAccounts[] with nested globalAccounts[] for agency sub-sellers.
+    const apiData = await fetch(
+      `https://${domain}/account-switcher/global-and-regional-account/merchantMarketplace`,
+      {
+        credentials: "include",
+        headers: {
+          "Accept": "application/json, text/javascript, */*; q=0.01",
+          "x-requested-with": "XMLHttpRequest",
+        },
+      }
+    ).then(r => r.ok ? r.json() : null).catch(() => null);
+
+    console.log("[bgScrapeAccounts] API globalAccounts:", JSON.stringify(apiData?.globalAccounts)?.slice(0, 500));
+
+    const apiGlobal = apiData?.globalAccounts;
+    if (Array.isArray(apiGlobal) && apiGlobal.length > 0) {
+      const buildFromApi = (list, parentLabel) => {
+        for (const acct of list) {
+          const lbl = (acct.label || acct.name || acct.sellerName || "").trim();
+          if (!lbl) continue;
+          const isCurrent = !!(acct.isCurrent || acct.current || acct.isSelected);
+          const children = Array.isArray(acct.globalAccounts) ? acct.globalAccounts
+            : Array.isArray(acct.children) ? acct.children
+            : Array.isArray(acct.subAccounts) ? acct.subAccounts : [];
+          if (!accounts.has(lbl)) {
+            accounts.set(lbl, { label: lbl, isCurrent, parent: parentLabel, hasChildren: children.length > 0 });
+          }
+          if (children.length > 0) buildFromApi(children, lbl);
+        }
+      };
+      buildFromApi(apiGlobal, null);
+    }
+
+    // ── APPROACH 2: Background tab + Pinia _s Map (reads store, no clicking) ──
+    // AJAX calls work normally in background tabs; only rAF (rendering) is throttled.
+    // Pinia state is populated by the page's own API calls, independently of DOM render.
+    // Also run if Approach 1 returned a flat list (no hasChildren) — API doesn't return hierarchy.
+    if (accounts.size === 0 || ![...accounts.values()].some(a => a.hasChildren)) {
+      const candidates = [
+        `https://${domain}/account-switcher/default/merchantMarketplace`,
+        `https://${domain}/account-switcher`,
+      ];
+
+      for (const url of candidates) {
+        bgTab = await chrome.tabs.create({ url, active: false });
+
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, 10000);
+          function listener(tabId, info) {
+            if (tabId !== bgTab.id || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer); resolve();
+          }
+          chrome.tabs.onUpdated.addListener(listener);
+        });
+
+        // Wait for Vue to fetch and populate Pinia (API calls, not DOM renders)
+        await new Promise(r => setTimeout(r, 1500));
+
+        const piniaResult = await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id },
+          world: "MAIN",
+          func: () => {
+            try {
+              // Search all DOM elements for Vue 3 app mount point
+              let app = null;
+              for (const el of document.querySelectorAll("*")) {
+                if (el.__vue_app__) { app = el.__vue_app__; break; }
+              }
+              if (!app) return { debug: "no vue app" };
+
+              const pinia = app.config?.globalProperties?.$pinia;
+              if (!pinia) return { debug: "no pinia" };
+
+              // Use pinia._s (internal Map of all stores) for reliable access
+              const storeMap = pinia._s || new Map();
+              const results = [];
+
+              for (const [storeId, store] of storeMap) {
+                const state = store.$state || {};
+                for (const [key, val] of Object.entries(state)) {
+                  // Find arrays that look like account lists
+                  const list = Array.isArray(val) ? val
+                    : (val && typeof val === "object" && !Array.isArray(val))
+                      ? Object.values(val).find(v => Array.isArray(v) && v.length > 0 && (v[0]?.label || v[0]?.name))
+                      : null;
+                  if (!list || !list.length) continue;
+                  const first = list[0];
+                  if (typeof first !== "object" || !(first.label || first.name)) continue;
+
+                  for (const acct of list) {
+                    const lbl = (acct.label || acct.name || acct.sellerName || "").trim();
+                    if (!lbl) continue;
+                    const isCurrent = !!(acct.isCurrent || acct.current || acct.isSelected);
+                    const children = Array.isArray(acct.globalAccounts) ? acct.globalAccounts
+                      : Array.isArray(acct.children) ? acct.children
+                      : Array.isArray(acct.subAccounts) ? acct.subAccounts : [];
+                    results.push({ label: lbl, isCurrent, parentLabel: null, hasChildren: children.length > 0 });
+                    for (const child of children) {
+                      const cLbl = (child.label || child.name || "").trim();
+                      if (!cLbl) continue;
+                      results.push({ label: cLbl, isCurrent: !!(child.isCurrent || child.current), parentLabel: lbl, hasChildren: false });
+                    }
+                  }
+                  if (results.length > 0) {
+                    console.log("[bgScrapeAccounts] Pinia storeId:", storeId, "key:", key, "count:", results.length);
+                    return results;
+                  }
+                }
+              }
+
+              // Debug: what stores exist?
+              const storeDebug = {};
+              for (const [id, s] of storeMap) storeDebug[id] = Object.keys(s.$state || {});
+              return { debug: "no accounts found", stores: storeDebug };
+            } catch (e) { return { debug: "error: " + e.message }; }
+          },
+        }).then(([r]) => r?.result).catch(() => null);
+
+        console.log("[bgScrapeAccounts] Pinia result:", JSON.stringify(piniaResult)?.slice(0, 500));
+
+        // Pinia: only use if it found hierarchy (some accounts with hasChildren=true).
+        // A flat list (all hasChildren=false) is unreliable — fall through to DOM.
+        if (Array.isArray(piniaResult) && piniaResult.length > 0 && piniaResult.some(a => a.hasChildren)) {
+          for (const a of piniaResult) {
+            accounts.set(a.label, { label: a.label, isCurrent: a.isCurrent, parent: a.parentLabel, hasChildren: a.hasChildren });
+          }
+          break;
+        }
+
+        // ── APPROACH 3: DOM ancestry + click-reveal (background tab, no focus steal) ──
+        // Vue's reactive updates use microtasks (not rAF), so they work in bg tabs.
+        // We click-reveal to distinguish SPNs from final accounts:
+        //   SPN clicked → reveals new account-details elements (sub-sellers)
+        //   Final account clicked → reveals country rows (no account-details class)
+        await new Promise(r => setTimeout(r, 400));
+
+        const domRows = await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id },
+          func: () => {
+            const rows = [];
+            for (const btn of document.querySelectorAll(".full-page-account-switcher-account-details")) {
+              const ft = btn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+              const lbl = ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+              if (!lbl) continue;
+              const isCurrent = /\(current\)/i.test(ft);
+              const ancestors = [];
+              let el = btn.parentElement;
+              while (el && el !== document.body) {
+                const cls = el.className || "";
+                if (cls.includes("full-page-account-switcher-account") &&
+                    !cls.includes("full-page-account-switcher-accounts") &&
+                    !cls.includes("full-page-account-switcher-account-details") &&
+                    !cls.includes("full-page-account-switcher-account-branch") &&
+                    !cls.includes("full-page-account-switcher-account-store") &&
+                    !cls.includes("full-page-account-switcher-account-expander") &&
+                    !cls.includes("full-page-account-switcher-account-label")) {
+                  ancestors.push(el);
+                }
+                el = el.parentElement;
+              }
+              let parentLabel = null;
+              if (ancestors.length >= 2) {
+                const parentBtn = ancestors[1].querySelector(".full-page-account-switcher-account-details");
+                if (parentBtn && parentBtn !== btn) {
+                  const pft = parentBtn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+                  parentLabel = pft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim() || null;
+                }
+              }
+              rows.push({ label: lbl, isCurrent, parentLabel });
+            }
+            return rows;
+          },
+        }).then(([r]) => r?.result || []).catch(() => []);
+
+        console.log("[bgScrapeAccounts] DOM rows:", domRows.length, domRows.map(r => r.label + (r.parentLabel ? " < " + r.parentLabel : "")).join(", "));
+
+        for (const r of domRows) {
+          if (!accounts.has(r.label)) {
+            accounts.set(r.label, { label: r.label, isCurrent: r.isCurrent, parent: r.parentLabel, hasChildren: false });
+          }
+          if (r.parentLabel && accounts.has(r.parentLabel)) {
+            accounts.get(r.parentLabel).hasChildren = true;
+          }
+        }
+
+        const toCheck = domRows.filter(r => !r.parentLabel && !accounts.get(r.label)?.hasChildren).map(r => r.label);
+
+        for (const label of toCheck) {
+          // Per-iteration baseline: snapshot VISIBLE account-details BEFORE clicking.
+          // Uses offsetHeight > 0 — reliable even for height:0/overflow:hidden collapse
+          // (Amazon Vue SPA may not use display:none for accordion animation).
+          const beforeLabels = await chrome.scripting.executeScript({
+            target: { tabId: bgTab.id },
+            func: () => [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+              .filter(b => b.offsetHeight > 0)
+              .map(b => {
+                const ft = b.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+                return ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+              }).filter(Boolean),
+          }).then(([r]) => r?.result || []).catch(() => []);
+
+          await bgAccountClickRow(bgTab.id, label);
+          // Microtask-driven Vue updates work in background tabs; 400ms is generous.
+          await new Promise(r => setTimeout(r, 400));
+
+          const newSubAccounts = await chrome.scripting.executeScript({
+            target: { tabId: bgTab.id },
+            func: (beforeArr) => {
+              const beforeSet = new Set(beforeArr);
+              // Amazon uses .full-page-account-switcher-account-details for BOTH SPN sub-sellers
+              // AND country/marketplace rows. Distinguish by checking if all new entries are
+              // country names — if so, it's a marketplace selector, not an SPN.
+              const COUNTRIES = new Set(["afghanistan","albania","algeria","andorra","angola","argentina","armenia","australia","austria","azerbaijan","bahrain","bangladesh","belarus","belgium","belize","benin","bhutan","bolivia","brazil","brunei","bulgaria","cambodia","cameroon","canada","chile","china","colombia","congo","costa rica","croatia","cuba","cyprus","czech republic","czechia","denmark","ecuador","egypt","el salvador","estonia","ethiopia","finland","france","georgia","germany","ghana","greece","guatemala","hungary","iceland","india","indonesia","iran","iraq","ireland","israel","italy","jamaica","japan","jordan","kazakhstan","kenya","kuwait","latvia","lebanon","liechtenstein","lithuania","luxembourg","malaysia","malta","mauritius","mexico","moldova","monaco","mongolia","montenegro","morocco","nepal","netherlands","new zealand","nicaragua","nigeria","north korea","north macedonia","norway","oman","pakistan","panama","paraguay","peru","philippines","poland","portugal","qatar","romania","russia","saudi arabia","senegal","serbia","singapore","slovakia","slovenia","south africa","south korea","spain","sri lanka","sweden","switzerland","taiwan","tajikistan","tanzania","thailand","tunisia","turkey","ukraine","united arab emirates","united kingdom","united states","uruguay","uzbekistan","venezuela","vietnam","yemen","zambia","zimbabwe"]);
+              const isCountry = lbl => COUNTRIES.has(lbl.replace(/\s*\(pending\s+registration\)/i, "").trim().toLowerCase());
+              const found = [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+                .filter(b => b.offsetHeight > 0)
+                .map(b => {
+                  const ft = b.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+                  const lbl = ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+                  return lbl && !beforeSet.has(lbl) ? { label: lbl, isCurrent: /\(current\)/i.test(ft) } : null;
+                }).filter(Boolean);
+              if (found.length > 0 && found.every(f => isCountry(f.label))) return [];
+              return found;
+            },
+            args: [beforeLabels],
+          }).then(([r]) => r?.result || []).catch(() => []);
+
+          console.log("[bgScrapeAccounts] click-reveal for", label, "→", newSubAccounts.map(a => a.label).join(", ") || "(none)");
+
+          if (newSubAccounts.length > 0) {
+            if (accounts.has(label)) accounts.get(label).hasChildren = true;
+            for (const sub of newSubAccounts) {
+              if (!accounts.has(sub.label)) {
+                accounts.set(sub.label, { label: sub.label, isCurrent: sub.isCurrent, parent: label, hasChildren: false });
+              } else if (!accounts.get(sub.label).parent) {
+                // Sub-account from flat API (parent: null) — assign parent now.
+                accounts.get(sub.label).parent = label;
+              } else if (accounts.get(sub.label).parent !== label) {
+                // Sub-account already parented to a different SPN (e.g. ExaSoft under both
+                // EXPANDO 5 and EXPANDO global SPN) — add duplicate entry so it appears
+                // under both parents in the UI.
+                const dupKey = `${sub.label}::${label}`;
+                if (!accounts.has(dupKey)) {
+                  accounts.set(dupKey, { label: sub.label, isCurrent: sub.isCurrent, parent: label, hasChildren: false });
+                }
+              }
+            }
+          }
+          await bgAccountClickRow(bgTab.id, label);
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        if (accounts.size > 0) break;
+        await chrome.tabs.remove(bgTab.id).catch(() => {});
+        bgTab = null;
+      }
+    }
+
+    const accountsList = [...accounts.values()];
+    await chrome.storage.local.set({ [ACCOUNT_LIST_ACCOUNTS_KEY]: { accounts: accountsList, cachedAt: Date.now() } });
+    chrome.runtime.sendMessage({ type: "ACCOUNT_LIST_READY", accounts: accountsList }).catch(() => {});
+  } catch (err) {
+    console.error("[bgScrapeAccounts] error:", err);
+    await chrome.storage.local.set({ [ACCOUNT_LIST_ACCOUNTS_KEY]: { error: err.message, cachedAt: Date.now() } });
+    chrome.runtime.sendMessage({ type: "ACCOUNT_LIST_READY", error: err.message }).catch(() => {});
+  } finally {
+    bgScrapingAccounts = false;
+    await chrome.storage.local.set({ [ACCOUNT_LIST_LOADING_KEY]: false });
+    if (bgTab) await chrome.tabs.remove(bgTab.id).catch(() => {});
+  }
+}
+
+
+// ─── IBA Multi-client orchestration ──────────────────────────────────────────
+
+function ibaMultiWaitForTabLoad(tabId, timeoutMs = 20000) {
+  return new Promise(resolve => {
+    let sawLoading = false;
+    const timer = setTimeout(resolve, timeoutMs);
+    function listener(tid, info) {
+      if (tid !== tabId) return;
+      if (info.status === "loading") { sawLoading = true; return; }
+      if (info.status === "complete" && sawLoading) {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timer);
+        resolve();
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+async function ibaMultiProcessNext() {
+  const stored = await chrome.storage.local.get(IBA_MULTI_STATE_KEY);
+  const state = stored[IBA_MULTI_STATE_KEY];
+  if (!state) return;
+
+  const { accounts, currentIndex, results } = state;
+
+  if (currentIndex >= accounts.length) {
+    await chrome.storage.local.remove(IBA_MULTI_CLIENT_MODE_KEY);
+    await chrome.storage.local.set({
+      [IBA_MULTI_PROGRESS_KEY]: {
+        active: false, done: true, results,
+        total: accounts.length, completedAt: Date.now(),
+      }
+    });
+    if (state.tabId) {
+      try { await chrome.tabs.remove(state.tabId); } catch { /* tab already closed */ }
+    }
+    await chrome.storage.local.remove(IBA_MULTI_STATE_KEY);
+    return;
+  }
+
+  const accountLabel = accounts[currentIndex];
+  await chrome.storage.local.set({
+    [IBA_MULTI_PROGRESS_KEY]: {
+      active: true, phase: "switching",
+      currentAccount: accountLabel,
+      current: currentIndex + 1, total: accounts.length, results,
+    }
+  });
+
+  // Ensure we have a live tab
+  let tabId = state.tabId;
+  if (tabId) {
+    try { await chrome.tabs.get(tabId); } catch { tabId = null; }
+  }
+  if (!tabId) {
+    const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+    tabId = tab.id;
+  }
+  await chrome.storage.local.set({ [IBA_MULTI_STATE_KEY]: { ...state, tabId } });
+
+  // Navigate to account-switcher
+  const switcherUrl = "https://sellercentral.amazon.de/account-switcher/default/merchantMarketplace";
+  await chrome.tabs.update(tabId, { url: switcherUrl });
+  await ibaMultiWaitForTabLoad(tabId, 20000);
+  await new Promise(r => setTimeout(r, 1500));
+
+  // Select the account and always switch to Germany — IBA runs only on DE
+  const selectResult = await chrome.tabs.sendMessage(tabId, {
+    action: "DO_ACCOUNT_SELECT",
+    sellerName: accountLabel,
+    marketLabel: "Germany",
+  }).catch(() => ({ success: false, error: "Content script unavailable" }));
+
+  if (!selectResult?.success) {
+    const newResults = [...results, { account: accountLabel, status: "error", error: selectResult?.error || "Account selection failed" }];
+    await chrome.storage.local.set({ [IBA_MULTI_STATE_KEY]: { ...state, tabId, currentIndex: currentIndex + 1, results: newResults } });
+    await ibaMultiProcessNext();
+    return;
+  }
+
+  // Wait for navigation away from account-switcher
+  await new Promise(resolve => {
+    const timer = setTimeout(resolve, 15000);
+    function onUpd(tid, info) {
+      if (tid !== tabId || info.status !== "complete") return;
+      chrome.tabs.get(tabId).then(t => {
+        if (t.url && !t.url.includes("/account-switcher/")) {
+          clearTimeout(timer);
+          chrome.tabs.onUpdated.removeListener(onUpd);
+          resolve();
+        }
+      }).catch(() => {});
+    }
+    chrome.tabs.onUpdated.addListener(onUpd);
+  });
+
+  // Set multi-client mode so content script suppresses alerts and sends IBA_DONE
+  await chrome.storage.local.set({ [IBA_MULTI_CLIENT_MODE_KEY]: true });
+  await chrome.storage.local.set({
+    [IBA_MULTI_PROGRESS_KEY]: {
+      active: true, phase: "iba_running",
+      currentAccount: accountLabel,
+      current: currentIndex + 1, total: accounts.length, results,
+    }
+  });
+
+  await chrome.tabs.update(tabId, { url: IBA_START_URL });
+  // Content script detects _ibaStart=1, runs automation, sends IBA_DONE when finished.
+}
+
 async function runScheduledDraftStart(config) {
   const origin = getSellerCentralOrigin(config?.origin) || DEFAULT_SELLER_CENTRAL_ORIGIN;
   await startTask("draftScraping", {
@@ -715,6 +1207,24 @@ function buildMultiMarketDraftUrl(market) {
   if (market.globalAccountId) url.searchParams.set("mons_sel_dir_paid", market.globalAccountId);
   url.searchParams.set("ignore_selection_changed", "true");
   return url.toString();
+}
+
+// Navigate to /home with mons_sel_ params to switch the market context reliably.
+// After /home loads the account is switched — then navigate to /sbr to load templates.
+function buildShippingTemplatesSwitchUrl(market, baseDomain) {
+  const domain = baseDomain || DEFAULT_SELLER_CENTRAL_ORIGIN.replace(/^https?:\/\//, "");
+  const url = new URL(`https://${domain}/home`);
+  if (market.mkid) url.searchParams.set("mons_sel_mkid", market.mkid);
+  if (market.mcid) url.searchParams.set("mons_sel_dir_mcid", market.mcid);
+  if (market.globalAccountId) url.searchParams.set("mons_sel_dir_paid", market.globalAccountId);
+  if (market.mkid || market.mcid) url.searchParams.set("ignore_selection_changed", "true");
+  return url.toString();
+}
+
+// Plain /sbr URL — used after the account switch has already been done via /home.
+function buildShippingTemplatesUrl(baseDomain) {
+  const domain = baseDomain || DEFAULT_SELLER_CENTRAL_ORIGIN.replace(/^https?:\/\//, "");
+  return `https://${domain}/sbr#shipping_templates`;
 }
 
 function getSellerCentralOrigin(urlString) {
@@ -966,8 +1476,17 @@ async function startTask(taskType, options = {}) {
 
   const taskConfig = TASK_CONFIG[taskType];
   const targetUrl = `${origin}${taskConfig.relativePath}`;
+
+  const violationsMarkets = taskType === "violationsExport" && Array.isArray(options.markets) ? options.markets : [];
+  const hasViolationsMarkets = violationsMarkets.length > 0;
+  const notifMarkets = taskType === "notifPrefsEmail" && Array.isArray(options.markets) ? options.markets : [];
+  const hasNotifMarkets = notifMarkets.length > 0;
+  const initialUrl = (taskType === "violationsExport" && hasViolationsMarkets) || (taskType === "notifPrefsEmail" && hasNotifMarkets)
+    ? `${origin}/account-switcher/default/merchantMarketplace`
+    : targetUrl;
+
   const createdTab = await chrome.tabs.create({
-    url: targetUrl,
+    url: initialUrl,
     active: options.openInBackground === true ? false : true
   });
 
@@ -987,7 +1506,24 @@ async function startTask(taskType, options = {}) {
     scriptFile: taskConfig.scriptFile,
     selectedEmail: typeof options.selectedEmail === "string" ? options.selectedEmail : "",
     maxSkuCount: Number.isInteger(options.maxSkuCount) && options.maxSkuCount > 0 ? options.maxSkuCount : null,
-    violationStage: taskType === "violationsExport" ? "collectPolicy" : null,
+    violationStage: taskType === "violationsExport" ? (hasViolationsMarkets ? "onSwitcher" : "collectPolicy") : null,
+    violationsPolicyPathIndex: 0,
+    violationsMarketQueue: violationsMarkets,
+    violationsMarketIndex: 0,
+    violationsAllResults: [],
+    violationsSellerName: taskType === "violationsExport" ? (options.sellerName || null) : null,
+    notifStage: taskType === "notifPrefsEmail" ? (hasNotifMarkets ? "onSwitcher" : "collectPrefs") : null,
+    notifMarketQueue: notifMarkets,
+    notifMarketIndex: 0,
+    notifEmail: taskType === "notifPrefsEmail" ? (options.email || "") : null,
+    notifSellerName: taskType === "notifPrefsEmail" ? (options.sellerName || null) : null,
+    notifResults: [],
+    notifSectionIndex: 0,
+    notifPartialSectionResults: [],
+    notifPrefsTimerRunning: false,
+    notifPrefsInjectAttempts: 0,
+    notifLastReloadTime: 0,
+    processing: false,
     origin,
     violations: [],
     uniqueAsins: [],
@@ -1103,6 +1639,39 @@ async function injectDraftScraper(tabId, taskState) {
   }
 }
 
+function violationsSaveCurrentMarket(taskState) {
+  const marketQueue = taskState.violationsMarketQueue || [];
+  const idx = taskState.violationsMarketIndex;
+  const market = marketQueue[idx] || null;
+  taskState.violationsAllResults.push({
+    marketLabel: market?.label || market?.code || `Market ${idx + 1}`,
+    violations: [...taskState.violations],
+    uniqueAsins: [...taskState.uniqueAsins],
+    asinOrderCount: { ...taskState.asinOrderCount },
+    asinSkuMap: { ...taskState.asinSkuMap },
+  });
+}
+
+async function violationsAdvanceMarket(tabId, taskState) {
+  taskState.violationsMarketIndex += 1;
+  const marketQueue = taskState.violationsMarketQueue || [];
+
+  if (taskState.violationsMarketIndex < marketQueue.length) {
+    taskState.violations = [];
+    taskState.uniqueAsins = [];
+    taskState.asinIndex = 0;
+    taskState.asinOrderCount = {};
+    taskState.asinSkuMap = {};
+    taskState.violationsPolicyPathIndex = 0;
+    taskState.violationStage = "onSwitcher";
+    taskState.processing = false;
+    await chrome.tabs.update(tabId, { url: `${taskState.origin}/account-switcher/default/merchantMarketplace` });
+  } else {
+    taskState.violationStage = "downloadFiles";
+    await runViolationsScript(tabId);
+  }
+}
+
 async function runViolationsScript(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
@@ -1175,7 +1744,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "START_VIOLATIONS_EXPORT") {
     (async () => {
       try {
-        await startTask("violationsExport");
+        await startTask("violationsExport", {
+          markets: Array.isArray(message.markets) ? message.markets : [],
+          sellerName: typeof message.sellerName === "string" ? message.sellerName : null,
+        });
         sendResponse({ success: true });
       } catch (error) {
         sendResponse({ success: false, error: error.message || "Failed to start violations export." });
@@ -1183,6 +1755,102 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
 
     return true;
+  }
+
+  if (message?.type === "START_NOTIF_PREFS") {
+    (async () => {
+      try {
+        await startTask("notifPrefsEmail", {
+          email: typeof message.email === "string" ? message.email : "",
+          markets: Array.isArray(message.markets) ? message.markets : [],
+          sellerName: typeof message.sellerName === "string" ? message.sellerName : null,
+        });
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message || "Failed to start notification preferences." });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "GET_NOTIF_PREFS_STATE") {
+    const tabId = sender.tab?.id;
+    const taskState = typeof tabId === "number" ? taskStateByTabId.get(tabId) : null;
+    if (!taskState || taskState.taskType !== "notifPrefsEmail") {
+      sendResponse({ success: false });
+      return;
+    }
+    sendResponse({ success: true, email: taskState.notifEmail, sectionIndex: taskState.notifSectionIndex || 0 });
+  }
+
+  if (message?.type === "NOTIF_PREFS_PROGRESS") {
+    (async () => {
+      const tabId = sender.tab?.id;
+      const taskState = typeof tabId === "number" ? taskStateByTabId.get(tabId) : null;
+      if (!taskState) return;
+      await chrome.storage.local.set({
+        _notifPrefsProgress: {
+          active: true,
+          currentMarket: (taskState.notifMarketQueue || [])[taskState.notifMarketIndex]?.label || "Market",
+          sectionName: message.sectionName || "",
+          marketIndex: taskState.notifMarketIndex,
+          totalMarkets: (taskState.notifMarketQueue || []).length,
+        }
+      });
+    })();
+  }
+
+  if (message?.type === "NOTIF_PREFS_SECTION_DONE") {
+    const tabId = sender.tab?.id;
+    const taskState = typeof tabId === "number" ? taskStateByTabId.get(tabId) : null;
+    if (taskState && taskState.taskType === "notifPrefsEmail") {
+      taskState.notifSectionIndex = (taskState.notifSectionIndex || 0) + 1;
+      if (message.sectionResult) {
+        taskState.notifPartialSectionResults = [...(taskState.notifPartialSectionResults || []), message.sectionResult];
+      }
+      console.log(`[NotifPrefs] section done, next index=${taskState.notifSectionIndex}`);
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "NOTIF_PREFS_MARKET_DONE") {
+    (async () => {
+      const tabId = sender.tab?.id;
+      const taskState = typeof tabId === "number" ? taskStateByTabId.get(tabId) : null;
+      if (!taskState || taskState.taskType !== "notifPrefsEmail") return;
+
+      const currentMarket = (taskState.notifMarketQueue || [])[taskState.notifMarketIndex];
+      const partialResults = taskState.notifPartialSectionResults || [];
+      const finalResults = Array.isArray(message.sectionResults) ? message.sectionResults : [];
+      // Merge: partialResults (from page-reload runs) + finalResults (from last run, no overlap)
+      const partialNames = new Set(partialResults.map((r) => r.sectionName));
+      const merged = [...partialResults, ...finalResults.filter((r) => !partialNames.has(r.sectionName))];
+      taskState.notifResults.push({
+        marketLabel: currentMarket?.label || currentMarket?.code || `Market ${taskState.notifMarketIndex + 1}`,
+        sectionResults: merged,
+      });
+
+      taskState.notifMarketIndex += 1;
+      taskState.notifSectionIndex = 0;
+      taskState.notifPartialSectionResults = [];
+      taskState.notifPrefsTimerRunning = false;
+      taskState.notifPrefsInjectAttempts = 0;
+      taskState.notifLastReloadTime = 0;
+      scriptInjectedTabs.delete(tabId);
+
+      if (taskState.notifMarketIndex < (taskState.notifMarketQueue || []).length) {
+        taskState.notifStage = "onSwitcher";
+        taskState.processing = false;
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}/account-switcher/default/merchantMarketplace` });
+      } else {
+        await chrome.storage.local.set({
+          _notifPrefsProgress: { active: false },
+          _notifPrefsResult: { done: true, results: taskState.notifResults },
+        });
+        clearTask(tabId);
+      }
+    })();
   }
 
   if (message?.type === "STOP_DRAFT_SCRAPING") {
@@ -1222,6 +1890,91 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true, state });
     })();
 
+    return true;
+  }
+
+  if (message?.type === "START_LOG_CAPTURE") {
+    logCaptureEnabled = true;
+    capturedLogEntries = [];
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "STOP_LOG_CAPTURE") {
+    logCaptureEnabled = false;
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "GET_CAPTURED_LOGS") {
+    sendResponse({ entries: capturedLogEntries });
+    return true;
+  }
+
+  if (message?.type === "GET_ACCOUNT_LIST") {
+    (async () => {
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!activeTab?.url || !/sellercentral\.amazon\./.test(activeTab.url)) {
+          sendResponse({ success: false, error: "No Seller Central tab active" }); return;
+        }
+        const domain = new URL(activeTab.url).hostname;
+        const { parentId, mkid } = message;
+
+        // Check if already loading — popup should just poll storage
+        const { [ACCOUNT_LIST_LOADING_KEY]: alreadyLoading } = await chrome.storage.local.get(ACCOUNT_LIST_LOADING_KEY);
+        if (alreadyLoading) {
+          sendResponse({ loading: true });
+          return;
+        }
+
+        // Fire scraping as background task — does NOT block on sendResponse
+        bgScrapeAccounts(domain, parentId, mkid).catch(console.error);
+        sendResponse({ loading: true });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "LOG_ENTRY") {
+    if (logCaptureEnabled) {
+      capturedLogEntries.push(message.entry);
+    }
+    return;
+  }
+
+  if (message?.type === "START_DISBURSEMENT") {
+    const { markets, originTabId, currentDomain, currentMarket, currentSellerName } = message;
+    disbursementOrchestrate(markets, originTabId, currentDomain, currentMarket, currentSellerName).catch(() => {});
+    sendResponse({ started: true });
+    return true;
+  }
+
+  if (message?.type === "STOP_DISBURSEMENT") {
+    disbursementStopRequested = true;
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "MARKET_SWITCH") {
+    const { tabId, targetUrl, sellerName, marketLabel } = message;
+    marketSwitchWithAccountCheck(tabId, targetUrl, sellerName, marketLabel).catch(() => {});
+    sendResponse({ started: true });
+    return true;
+  }
+
+  if (message?.type === "BRAND_SCANNER_ORCHESTRATE") {
+    const { brands, originTabUrl } = message;
+    brandScannerOrchestrate(brands, originTabUrl).catch(() => {});
+    sendResponse({ started: true });
+    return true;
+  }
+
+  if (message?.type === "BRAND_SCANNER_STOP") {
+    brandScannerStopRequested = true;
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -1325,6 +2078,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })();
 
+    return true;
+  }
+
+  if (message?.type === "IBA_MULTI_START") {
+    (async () => {
+      try {
+        const { accounts } = message;
+        if (!Array.isArray(accounts) || accounts.length === 0) {
+          sendResponse({ success: false, error: "No accounts specified." });
+          return;
+        }
+        const state = {
+          accounts,
+          currentIndex: 0,
+          tabId: null,
+          results: [],
+          startedAt: Date.now(),
+        };
+        await chrome.storage.local.set({ [IBA_MULTI_STATE_KEY]: state });
+        ibaMultiProcessNext().catch(console.error);
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "IBA_DONE") {
+    (async () => {
+      const stored = await chrome.storage.local.get(IBA_MULTI_STATE_KEY);
+      const state = stored[IBA_MULTI_STATE_KEY];
+      if (!state || sender.tab?.id !== state.tabId) return;
+
+      const accountLabel = state.accounts[state.currentIndex];
+      const resultEntry = {
+        account: accountLabel,
+        status: message.result === "no_orders" ? "skipped" : "done",
+      };
+      const newState = {
+        ...state,
+        currentIndex: state.currentIndex + 1,
+        results: [...state.results, resultEntry],
+      };
+      await chrome.storage.local.set({ [IBA_MULTI_STATE_KEY]: newState });
+      ibaMultiProcessNext().catch(console.error);
+    })();
+    return false;
+  }
+
+  if (message?.type === "IBA_MULTI_STOP") {
+    (async () => {
+      await chrome.storage.local.remove([IBA_MULTI_STATE_KEY, IBA_MULTI_CLIENT_MODE_KEY]);
+      await chrome.storage.local.set({
+        [IBA_MULTI_PROGRESS_KEY]: { active: false, done: false, stopped: true }
+      });
+      sendResponse({ success: true });
+    })();
     return true;
   }
 
@@ -1505,7 +2316,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       uniqueAsins: taskState.uniqueAsins,
       asinIndex: taskState.asinIndex,
       asinOrderCount: taskState.asinOrderCount,
-      asinSkuMap: taskState.asinSkuMap
+      asinSkuMap: taskState.asinSkuMap,
+      violationsAllResults: taskState.violationsAllResults || [],
     });
   }
 
@@ -1518,11 +2330,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      taskState.violations = Array.isArray(message.violations) ? message.violations : [];
+      const newViolations = Array.isArray(message.violations) ? message.violations : [];
+      taskState.violations = [...(taskState.violations || []), ...newViolations];
+
+      const policyPaths = TASK_CONFIG.violationsExport.policyPaths;
+      taskState.violationsPolicyPathIndex = (taskState.violationsPolicyPathIndex || 0) + 1;
+
+      if (taskState.violationsPolicyPathIndex < policyPaths.length) {
+        const nextPath = policyPaths[taskState.violationsPolicyPathIndex];
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}${nextPath}` });
+        return;
+      }
+
       taskState.uniqueAsins = [...new Set(taskState.violations.map((item) => item.asin).filter(Boolean))];
 
       if (taskState.uniqueAsins.length === 0) {
-        clearTask(tabId);
+        if ((taskState.violationsMarketQueue || []).length > 0) {
+          violationsSaveCurrentMarket(taskState);
+          await violationsAdvanceMarket(tabId, taskState);
+        } else {
+          clearTask(tabId);
+        }
         return;
       }
 
@@ -1578,8 +2406,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      taskState.violationStage = "downloadFiles";
-      await runViolationsScript(tabId);
+      if ((taskState.violationsMarketQueue || []).length > 0) {
+        violationsSaveCurrentMarket(taskState);
+        await violationsAdvanceMarket(tabId, taskState);
+      } else {
+        taskState.violationStage = "downloadFiles";
+        await runViolationsScript(tabId);
+      }
     })();
   }
 
@@ -1847,7 +2680,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "VAT_REPORT_DONE") {
     chrome.storage.local.remove([VAT_REPORT_PARAMS_KEY, VAT_REPORT_PENDING_PARAMS_KEY]).catch(() => {});
     const tabId = sender.tab?.id;
-    if (typeof tabId === "number") clearTask(tabId);
+    if (typeof tabId === "number") {
+      void maybeDownloadConsoleLog(tabId, "vat_report");
+      clearTask(tabId);
+    }
     return false;
   }
 
@@ -1908,7 +2744,78 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "INVOICE_DOWNLOAD_DONE") {
     chrome.storage.local.remove(["_invoiceDownloaderParams", "_invoiceDownloaderPendingParams"]).catch(() => {});
     const tabId = sender.tab?.id;
-    if (typeof tabId === "number") clearTask(tabId);
+    if (typeof tabId === "number") {
+      void maybeDownloadConsoleLog(tabId, "invoice_downloader");
+      clearTask(tabId);
+    }
+    // Forward completion with counts to the popup (if open)
+    chrome.runtime.sendMessage({
+      type:        "INVOICE_DOWNLOAD_COMPLETE",
+      count:       message.count       ?? 0,
+      invoices:    message.invoices    ?? 0,
+      creditNotes: message.creditNotes ?? 0,
+      error:       message.error       ?? null,
+    }).catch(() => {}); // popup may not be open — ignore
+  }
+
+  if (message?.type === "DELETE_TEMPLATES") {
+    (async () => {
+      try {
+        const { templates } = message; // [{ name, origin, marketCode }]
+        if (!templates?.length) {
+          sendResponse({ success: false, error: "No templates provided." });
+          return;
+        }
+
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
+
+        let delBaseDomain = DEFAULT_SELLER_CENTRAL_ORIGIN.replace(/^https?:\/\//, "");
+        try {
+          const u = new URL(tab.url || "");
+          if (u.hostname.includes("sellercentral.amazon")) delBaseDomain = u.hostname;
+        } catch (_) {}
+
+        const queue = {
+          templates,
+          currentIndex: 0,
+          deleted: 0,
+          errors: [],
+          baseDomain: delBaseDomain,
+        };
+
+        await chrome.storage.local.set({
+          [DELETE_QUEUE_KEY]: queue,
+          [DELETE_PROGRESS_KEY]: {
+            active: true,
+            current: 0,
+            total: templates.length,
+            deleted: 0,
+            label: (templates[0]?.marketCode ? `[${templates[0].marketCode}] ` : "") + (templates[0]?.name || ""),
+            error: "",
+          },
+        });
+
+        const firstTemplate = templates[0];
+        const needsSwitch = !!(firstTemplate.mkid);
+        const firstListUrl = needsSwitch
+          ? buildShippingTemplatesSwitchUrl(firstTemplate, delBaseDomain)
+          : buildShippingTemplatesUrl(delBaseDomain);
+        taskStateByTabId.set(tab.id, {
+          taskType: "deleteTemplate",
+          tabId: tab.id,
+          phase: needsSwitch ? "switch" : "delete",
+          expectedUrl: `https://${delBaseDomain}`,
+        });
+        await chrome.tabs.update(tab.id, { url: firstListUrl });
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("[BG] DELETE_TEMPLATES error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
   }
 
   if (message?.type === "LIST_SHIPPING_TEMPLATES") {
@@ -1917,18 +2824,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
 
-        // Derive SC origin from current tab or fall back to .de
-        let origin = "https://sellercentral.amazon.de";
+        // markets: array of market objects (or origin strings for backward compat) sent from popup
+        let markets = null;
+        if (Array.isArray(message.markets) && message.markets.length > 0) {
+          markets = message.markets.map((m) =>
+            typeof m === "string" ? { origin: m } : m
+          );
+        }
+
+        if (!markets) {
+          let origin = DEFAULT_SELLER_CENTRAL_ORIGIN;
+          try {
+            const u = new URL(tab.url || "");
+            if (u.hostname.includes("sellercentral.amazon")) origin = u.origin;
+          } catch (_) {}
+          markets = [{ origin }];
+        }
+
+        let baseDomain = DEFAULT_SELLER_CENTRAL_ORIGIN.replace(/^https?:\/\//, "");
         try {
           const u = new URL(tab.url || "");
-          if (u.hostname.includes("sellercentral.amazon")) origin = u.origin;
+          if (u.hostname.includes("sellercentral.amazon")) baseDomain = u.hostname;
         } catch (_) {}
 
-        const listUrl = origin + SHIPPING_TEMPLATES_PATH;
+        const marketQueue = { markets, currentIndex: 0, accumulated: [], baseDomain };
+        await chrome.storage.local.set({
+          [SHIPPING_TEMPLATE_LIST_KEY]: null,
+          [SPC_MARKET_LOAD_QUEUE_KEY]: marketQueue,
+        });
 
-        await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: null });
-        taskStateByTabId.set(tab.id, { taskType: "listShippingTemplates", tabId: tab.id });
-        await chrome.tabs.update(tab.id, { url: listUrl });
+        // Phase "switch": navigate to /home with mons_sel_ to switch the market account.
+        // After /home loads, the onUpdated handler will navigate to /sbr to collect templates.
+        const firstMarket = markets[0];
+        const firstUrl = firstMarket.mkid
+          ? buildShippingTemplatesSwitchUrl(firstMarket, baseDomain)
+          : buildShippingTemplatesUrl(baseDomain);
+        const firstExpected = `https://${baseDomain}`;
+        taskStateByTabId.set(tab.id, {
+          taskType: "listShippingTemplates",
+          tabId: tab.id,
+          phase: firstMarket.mkid ? "switch" : "load",
+          expectedUrl: firstExpected,
+        });
+        await chrome.tabs.update(tab.id, { url: firstUrl });
 
         sendResponse({ success: true });
       } catch (error) {
@@ -1954,37 +2892,67 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        let origin = DEFAULT_SELLER_CENTRAL_ORIGIN;
+        await injectConsoleInterceptor(tab.id).catch(() => {});
+
+        // Templates may carry per-entry { origin, marketCode } from multi-market loading.
+        // If not, fall back to the current tab's origin.
+        let fallbackOrigin = DEFAULT_SELLER_CENTRAL_ORIGIN;
+        let pcBaseDomain = DEFAULT_SELLER_CENTRAL_ORIGIN.replace(/^https?:\/\//, "");
         try {
           const u = new URL(tab.url || "");
-          if (u.hostname.includes("sellercentral.amazon")) origin = u.origin;
+          if (u.hostname.includes("sellercentral.amazon")) {
+            fallbackOrigin = u.origin;
+            pcBaseDomain = u.hostname;
+          }
         } catch (_) {}
+
+        const taggedTemplates = templates.map((t) => ({
+          name: t.name,
+          origin: t.origin || fallbackOrigin,
+          marketCode: t.marketCode || getMarketCodeFromOrigin(t.origin || fallbackOrigin),
+          mkid: t.mkid || "",
+          mcid: t.mcid || "",
+          globalAccountId: t.globalAccountId || "",
+        }));
 
         const queue = {
           config,
-          templates,
+          templates: taggedTemplates,
           currentIndex: 0,
           totalChanged: 0,
           errors: [],
-          origin,
+          baseDomain: pcBaseDomain,
         };
+
+        const firstLabel = taggedTemplates[0]
+          ? (taggedTemplates[0].marketCode ? `[${taggedTemplates[0].marketCode}] ` : "") + taggedTemplates[0].name
+          : "";
 
         await chrome.storage.local.set({
           [PRICE_CHANGE_QUEUE_KEY]: queue,
           [PRICE_CHANGE_PROGRESS_KEY]: {
             active: true,
             current: 0,
-            total: templates.length,
+            total: taggedTemplates.length,
             totalChanged: 0,
-            label: templates[0]?.name || "",
+            label: firstLabel,
             error: "",
           },
         });
 
-        // Navigate to the template list page — onUpdated will inject the script
-        // and call __selectAndApplyForTemplate for each template in sequence.
-        taskStateByTabId.set(tab.id, { taskType: "priceChange", phase: "selectEdit", tabId: tab.id });
-        await chrome.tabs.update(tab.id, { url: origin + SHIPPING_TEMPLATES_PATH });
+        // Navigate to the template list page via two-step: /home switch → /sbr.
+        const firstPcTemplate = taggedTemplates[0];
+        const needsPcSwitch = !!(firstPcTemplate?.mkid);
+        const firstPcUrl = needsPcSwitch
+          ? buildShippingTemplatesSwitchUrl(firstPcTemplate, pcBaseDomain)
+          : buildShippingTemplatesUrl(pcBaseDomain);
+        taskStateByTabId.set(tab.id, {
+          taskType: "priceChange",
+          phase: needsPcSwitch ? "switch" : "selectEdit",
+          tabId: tab.id,
+          expectedUrl: `https://${pcBaseDomain}`,
+        });
+        await chrome.tabs.update(tab.id, { url: firstPcUrl });
 
         sendResponse({ success: true });
       } catch (error) {
@@ -1994,7 +2962,665 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
+
+  if (message?.type === "INVENTORY_AGE_START" || message?.type === "INVENTORY_AGE_START_ALL") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
+
+        await chrome.storage.local.remove("_inventoryAgeLog");
+
+        const dryRun = message.dryRun === true;
+        const allMarkets = message.type === "INVENTORY_AGE_START_ALL";
+
+        let baseDomain = DEFAULT_SELLER_CENTRAL_ORIGIN.replace(/^https?:\/\//, "");
+        try {
+          const u = new URL(tab.url || "");
+          if (u.hostname.includes("sellercentral.amazon")) baseDomain = u.hostname;
+        } catch (_) {}
+
+        let markets = [];
+        if (allMarkets) {
+          const mkResp = await chrome.tabs.sendMessage(tab.id, { action: "GET_MARKET_DATA" }).catch(() => null);
+          markets = mkResp?.data?.standaloneRegionalAccounts || [];
+        }
+        if (!markets.length) {
+          markets = [{ origin: `https://${baseDomain}`, label: getMarketCodeFromOrigin(`https://${baseDomain}`) }];
+        }
+
+        const queue = {
+          markets: markets.map(m => ({
+            label: m.label || getMarketCodeFromOrigin(m.origin || `https://${baseDomain}`),
+            mkid: m.ids?.mons_sel_mkid || "",
+            mcid: m.ids?.mons_sel_dir_mcid || "",
+            globalAccountId: m.globalAccountId || "",
+            origin: m.origin || `https://${baseDomain}`,
+          })),
+          currentIndex: 0,
+          results: {},
+          startedAt: new Date().toISOString(),
+          baseDomain,
+          dryRun,
+          startOrigin: `https://${baseDomain}`,
+        };
+
+        await chrome.storage.local.set({
+          [INVENTORY_AGE_QUEUE_KEY]: queue,
+          [INVENTORY_AGE_PROGRESS_KEY]: {
+            active: true, phase: "init",
+            currentMarket: queue.markets[0]?.label || baseDomain,
+            page: 1, rowsSoFar: 0, totalEstimate: null, startedAt: queue.startedAt, error: null,
+          },
+          [INVENTORY_AGE_RESULTS_KEY]: null,
+        });
+
+        const firstMarket = queue.markets[0];
+        const targetUrl = firstMarket.mkid
+          ? `https://${baseDomain}/home?mons_sel_mkid=${encodeURIComponent(firstMarket.mkid)}&mons_sel_dir_mcid=${encodeURIComponent(firstMarket.mcid)}&ignore_selection_changed=true`
+          : `https://${baseDomain}${INVENTORY_AGE_PATH}`;
+
+        taskStateByTabId.set(tab.id, {
+          taskType: "inventoryAgeScan",
+          tabId: tab.id,
+          phase: firstMarket.mkid ? "switch" : "scrape",
+          expectedUrl: `https://${baseDomain}`,
+        });
+        await chrome.tabs.update(tab.id, { url: targetUrl });
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("[BG] INVENTORY_AGE_START error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "INVENTORY_AGE_ROWS") {
+    (async () => {
+      try {
+        const { rows, hasNextPage, marketCode, scanLog } = message;
+        if (scanLog?.length) {
+          const existing = (await chrome.storage.local.get("_inventoryAgeLog"))._inventoryAgeLog || [];
+          await chrome.storage.local.set({ _inventoryAgeLog: existing.concat(scanLog) });
+        }
+        const stored = await chrome.storage.local.get([INVENTORY_AGE_QUEUE_KEY, INVENTORY_AGE_PROGRESS_KEY]);
+        const queue = stored[INVENTORY_AGE_QUEUE_KEY];
+        const prog = stored[INVENTORY_AGE_PROGRESS_KEY] || {};
+        if (!queue) { sendResponse({ success: false }); return; }
+
+        const mkt = queue.markets[queue.currentIndex];
+        const mktKey = mkt?.label || marketCode || "??";
+        if (!queue.results[mktKey]) queue.results[mktKey] = [];
+        queue.results[mktKey].push(...(rows || []));
+
+        const newProg = {
+          ...prog,
+          rowsSoFar: (queue.results[mktKey] || []).length,
+          page: (prog.page || 1) + (hasNextPage ? 0 : 0),
+        };
+
+        if (hasNextPage) {
+          newProg.page = (prog.page || 1) + 1;
+          await chrome.storage.local.set({ [INVENTORY_AGE_QUEUE_KEY]: queue, [INVENTORY_AGE_PROGRESS_KEY]: newProg });
+          sendResponse({ action: "nextPage" });
+        } else {
+          queue.currentIndex++;
+          if (queue.currentIndex < queue.markets.length) {
+            const nextMkt = queue.markets[queue.currentIndex];
+            newProg.currentMarket = nextMkt?.label || "??";
+            newProg.page = 1;
+            newProg.rowsSoFar = 0;
+            newProg.phase = "switch";
+            await chrome.storage.local.set({ [INVENTORY_AGE_QUEUE_KEY]: queue, [INVENTORY_AGE_PROGRESS_KEY]: newProg });
+            const switchUrl = `https://${queue.baseDomain}/home?mons_sel_mkid=${encodeURIComponent(nextMkt.mkid)}&mons_sel_dir_mcid=${encodeURIComponent(nextMkt.mcid)}&ignore_selection_changed=true`;
+            const tabId = message.tabId;
+            taskStateByTabId.set(tabId, { taskType: "inventoryAgeScan", tabId, phase: "switch", expectedUrl: `https://${queue.baseDomain}` });
+            await chrome.tabs.update(tabId, { url: switchUrl });
+            sendResponse({ action: "switching" });
+          } else {
+            await finalizeInventoryAgeScan(queue);
+            sendResponse({ action: "done" });
+          }
+        }
+      } catch (error) {
+        console.error("[BG] INVENTORY_AGE_ROWS error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // ── SPP Management ──────────────────────────────────────────────────────────
+
+  if (message?.type === "GET_SPP_DATA") {
+    (async () => {
+      let bgTab = null;
+      try {
+        bgTab = await chrome.tabs.create({
+          url: `https://${SPP_DOMAIN}/account/#/user-management/users`,
+          active: false,
+        });
+
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 15000);
+          function listener(tabId, info) {
+            if (tabId !== bgTab.id || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer); resolve();
+          }
+          chrome.tabs.onUpdated.addListener(listener);
+        });
+
+        // Wait for Vue app + userList store to have data
+        const usersReady = await sppPollInTab(bgTab.id, () => {
+          const root = document.getElementById("global-user-permissions-root");
+          if (!root?.__vue_app__) return false;
+          const pinia = root.__vue_app__.config.globalProperties.$pinia;
+          const users = pinia?.state?.value?.userList?.users?.data;
+          return Array.isArray(users) && users.length > 0;
+        });
+        console.log("[SellerTools] SPP userList ready:", usersReady);
+
+        // Navigate to clients page to populate clientList store
+        await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id }, world: "MAIN",
+          func: () => {
+            const root = document.getElementById("global-user-permissions-root");
+            root?.__vue_app__?.config?.globalProperties?.$router?.push("/user-management/clients");
+          },
+        });
+
+        await sppPollInTab(bgTab.id, () => {
+          const root = document.getElementById("global-user-permissions-root");
+          if (!root?.__vue_app__) return false;
+          const pinia = root.__vue_app__.config.globalProperties.$pinia;
+          const clients = pinia?.state?.value?.clientList?.clients?.data;
+          return Array.isArray(clients) && clients.length > 0;
+        });
+
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id }, world: "MAIN",
+          func: () => {
+            const root = document.getElementById("global-user-permissions-root");
+            if (!root?.__vue_app__) return { error: "Vue app not found" };
+            const pinia = root.__vue_app__.config.globalProperties.$pinia;
+            if (!pinia) return { error: "Pinia not found" };
+            const s = pinia.state.value;
+            const employees = (s.userList?.users?.data || []).map(u => ({
+              id: u.id, name: u.name, email: u.email,
+              isOwner: !!u.partnerAccountOwner, isVerified: !!u.identityVerified,
+            }));
+            const clients = (s.clientList?.clients?.data || []).map(c => ({
+              id: c.id, name: c.name,
+            }));
+            return { employees, clients };
+          },
+        });
+
+        await chrome.tabs.remove(bgTab.id).catch(() => {});
+        bgTab = null;
+        const data = result?.result;
+        if (data?.error) sendResponse({ success: false, error: data.error });
+        else sendResponse({ success: true, employees: data?.employees || [], clients: data?.clients || [] });
+      } catch (err) {
+        if (bgTab) await chrome.tabs.remove(bgTab.id).catch(() => {});
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SPP_ASSIGN") {
+    (async () => {
+      const { employees, clients, rolePermissions, roleSections } = message;
+      sppAssignStopRequested = false;
+      const setProgress = (current, total, msg, errors = []) =>
+        chrome.storage.local.set({ [SPP_ASSIGN_PROGRESS_KEY]: {
+          active: current < total && !sppAssignStopRequested, current, total, message: msg, errors,
+        }});
+
+      await setProgress(0, employees.length, "Otevírám SPP Portal…");
+
+      let sppTab = null;
+      try {
+        const SPP_PERMS_URL = `https://${SPP_DOMAIN}/account/permissions#/user-management/users`;
+        const existing = await chrome.tabs.query({ url: `https://${SPP_DOMAIN}/*` });
+        if (existing.length > 0) {
+          sppTab = existing[0];
+          // Always navigate to the permissions section — global-user-permissions-root only exists there
+          await chrome.tabs.update(sppTab.id, { active: true, url: SPP_PERMS_URL });
+        } else {
+          sppTab = await chrome.tabs.create({ url: SPP_PERMS_URL, active: true });
+        }
+        // Wait for the page to fully load
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 20000);
+          function listener(tabId, info) {
+            if (tabId !== sppTab.id || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer); resolve();
+          }
+          chrome.tabs.onUpdated.addListener(listener);
+        });
+
+        const vueReady = await sppPollInTab(sppTab.id, () =>
+          !!document.getElementById("global-user-permissions-root")?.__vue_app__
+        , 400, 15000);
+        if (!vueReady) throw new Error("SPP Portal se nenačetl. Zkontroluj přihlášení na solutionproviderportal.amazon.com.");
+
+        const errors = [];
+        const log = [];
+        let assigned = 0;
+        let skipped = 0;
+        const logTs = () => new Date().toISOString();
+        const appendLog = (entry) => {
+          log.push({ ts: logTs(), ...entry });
+          chrome.storage.local.set({ [SPP_ASSIGN_LOG_KEY]: { startedAt: log[0]?.ts, entries: log } });
+        };
+
+        // Clear previous log at start of new run
+        await chrome.storage.local.set({ [SPP_ASSIGN_LOG_KEY]: { startedAt: logTs(), entries: [] } });
+
+        for (let i = 0; i < employees.length; i++) {
+          if (sppAssignStopRequested) break;
+          const emp = employees[i];
+          await setProgress(i, employees.length, `Přiřazuji: ${emp.name} (${i + 1}/${employees.length})`, errors);
+          try {
+            const result = await sppAssignOne(sppTab.id, emp, clients);
+            if (result?.saved) {
+              assigned++;
+              appendLog({ employee: emp.name, action: 'assign', result: 'ok', detail: clients.map(c => c.name).join(', ') });
+            } else {
+              skipped++;
+              appendLog({ employee: emp.name, action: 'assign', result: 'skipped', detail: 'Již přiřazen' });
+            }
+
+            // Apply role permissions for each client if a role was selected —
+            // regardless of whether assignment was new or already existed
+            if (rolePermissions && roleSections) {
+              let sppPageCount = 0; // track consecutive page loads for cooldown
+              for (const client of clients) {
+                if (sppAssignStopRequested) break;
+                await setProgress(i, employees.length,
+                  `Nastavuji oprávnění: ${emp.name} → ${client.name}`, errors);
+
+                // Cooldown every 10 pages to avoid Amazon rate-limiting
+                if (sppPageCount > 0 && sppPageCount % 10 === 0) {
+                  await setProgress(i, employees.length,
+                    `Pauza (anti-rate-limit) po ${sppPageCount} stránkách…`, errors);
+                  await new Promise(r => setTimeout(r, 25000));
+                }
+
+                let permOk = false;
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                  try {
+                    await sppApplyRolePermissions(sppTab.id, emp.id, client.id, rolePermissions, roleSections);
+                    appendLog({ employee: emp.name, client: client.name, action: 'permissions', result: 'ok' });
+                    permOk = true;
+                    break;
+                  } catch (permErr) {
+                    if (attempt < 2) {
+                      // Wait longer before retry — Amazon may have temporarily throttled
+                      await new Promise(r => setTimeout(r, 15000));
+                    } else {
+                      console.error(`[SPP] perms error ${emp.name}/${client.name}:`, permErr.message);
+                      errors.push({ employee: emp.name, error: `Oprávnění ${client.name}: ${permErr.message}` });
+                      appendLog({ employee: emp.name, client: client.name, action: 'permissions', result: 'error', detail: permErr.message });
+                    }
+                  }
+                }
+                sppPageCount++;
+                // Jittered delay between clients (2–4 s) to look more human
+                if (permOk) {
+                  const jitter = 2000 + Math.floor(Math.random() * 2000);
+                  await new Promise(r => setTimeout(r, jitter));
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[SellerTools] SPP assign error for ${emp.name}:`, err.message);
+            errors.push({ employee: emp.name, error: err.message });
+            appendLog({ employee: emp.name, action: 'assign', result: 'error', detail: err.message });
+          }
+          await new Promise(r => setTimeout(r, 800));
+        }
+
+        const parts = [];
+        if (assigned) parts.push(`${assigned} přiřazeno`);
+        if (skipped) parts.push(`${skipped} bez změn`);
+        const summary = parts.join(', ') || '0 přiřazeno';
+        const msg = sppAssignStopRequested
+          ? `Zastaveno. ${summary}.`
+          : `Hotovo. ${summary}.`;
+        appendLog({ action: 'summary', result: msg, detail: `Errors: ${errors.length}` });
+        await chrome.storage.local.set({ [SPP_ASSIGN_PROGRESS_KEY]: {
+          active: false, current: employees.length, total: employees.length, message: msg, errors,
+        }});
+        sendResponse({ success: true, assigned, errors });
+      } catch (err) {
+        await chrome.storage.local.set({ [SPP_ASSIGN_PROGRESS_KEY]: {
+          active: false, current: 0, total: 0, message: `Chyba: ${err.message}`, errors: [],
+        }});
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SPP_ASSIGN_STOP") {
+    sppAssignStopRequested = true;
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "GET_SPP_EMPLOYEE_ASSIGNMENTS") {
+    (async () => {
+      let bgTab = null;
+      try {
+        bgTab = await chrome.tabs.create({
+          url: `https://${SPP_DOMAIN}/account/#/user-management/users`,
+          active: false,
+        });
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 15000);
+          function listener(tabId, info) {
+            if (tabId !== bgTab.id || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer); resolve();
+          }
+          chrome.tabs.onUpdated.addListener(listener);
+        });
+
+        await sppOpenAddToClientModal(bgTab.id, message.employeeId);
+
+        // Read pre-checked checkboxes (= already assigned clients) across ALL pages.
+        // On the "Add Client" tab, already-assigned clients have:
+        //   - input[type="checkbox"] that is checked
+        //   - an "Assigned" badge/text next to the name
+        const [readRes] = await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id }, world: "MAIN",
+          func: async () => {
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+            const modal = document.querySelector('kat-modal');
+            if (!modal) return { error: 'Modal not found' };
+
+            // Click "Client Assignments" tab via shadow DOM
+            const assignTab = modal.querySelector('kat-tab[data-qa="client-assignments"]');
+            if (!assignTab) return { error: 'Client Assignments tab not found' };
+            const tabBtn = assignTab.shadowRoot?.querySelector('[role="tab"]');
+            if (!tabBtn) return { error: 'Tab button not found in shadow DOM' };
+            tabBtn.click();
+            await sleep(900);
+
+            const assigned = [];
+
+            function readCurrentPage() {
+              const list = modal.querySelector('kat-list');
+              if (!list) return;
+              for (const item of list.querySelectorAll('li[role="listitem"]')) {
+                const name = item.textContent?.trim();
+                if (name) assigned.push(name);
+              }
+            }
+
+            readCurrentPage();
+
+            // Paginate via kat-pagination
+            const paginator = modal.querySelector('kat-pagination');
+            if (paginator) {
+              const totalItems = parseInt(paginator.getAttribute('total-items') || '0', 10);
+              const perPage = parseInt(paginator.getAttribute('items-per-page') || '10', 10);
+              const totalPages = Math.ceil(totalItems / perPage);
+
+              for (let p = 2; p <= totalPages && p <= 20; p++) {
+                const shadow = paginator.shadowRoot;
+                const nextBtn = shadow && (
+                  shadow.querySelector('[aria-label="Next page"]') ||
+                  shadow.querySelector('[aria-label="next"]') ||
+                  shadow.querySelector('button[class*="next"]') ||
+                  shadow.querySelector('[data-action="next"]')
+                );
+                if (!nextBtn || nextBtn.disabled) break;
+                nextBtn.click();
+                await sleep(700);
+                readCurrentPage();
+              }
+            }
+
+            // Close modal
+            modal.querySelector('kat-button[data-qa="cancel-button"]')?.click();
+
+            return { ok: true, assigned };
+          },
+        });
+
+        await chrome.tabs.remove(bgTab.id).catch(() => {});
+        bgTab = null;
+
+        const data = readRes?.result;
+        if (data?.error) sendResponse({ success: false, error: data.error });
+        else sendResponse({ success: true, assigned: data?.assigned || [] });
+      } catch (err) {
+        if (bgTab) await chrome.tabs.remove(bgTab.id).catch(() => {});
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "GET_SPP_EMPLOYEE_PERMISSIONS") {
+    (async () => {
+      let bgTab = null;
+      try {
+        const { employeeId, clientId, sections } = message;
+        const url = `https://${SPP_DOMAIN}/account/permissions#/edit-user-permissions/${employeeId}/${clientId}`;
+        bgTab = await chrome.tabs.create({ url, active: false });
+
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, 20000);
+          function listener(tabId, info) {
+            if (tabId !== bgTab.id || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer); resolve();
+          }
+          chrome.tabs.onUpdated.addListener(listener);
+        });
+
+        // Phase 1: wait until Pinia toolCategories structure exists
+        const ready = await sppPollInTab(bgTab.id, () => {
+          const root = document.getElementById("global-user-permissions-root");
+          const pinia = root?.__vue_app__?.config?.globalProperties?.$pinia;
+          const tc = pinia?.state?.value?.userPermissions?.actorPermissionsData?.data?.toolCategories;
+          if (!Array.isArray(tc) || tc.length === 0) return false;
+          const firstTool = tc[0]?.tools?.[0];
+          return firstTool != null && firstTool.noneRole != null;
+        }, 500, 30000);
+
+        if (!ready) throw new Error("Stránka oprávnění se nenačetla (toolCategories prázdné)");
+
+        // Phase 2: wait until non-None permission count stabilizes (API data fully loaded)
+        let lastNonNoneCount = -1;
+        let stableRounds = 0;
+        const stabilizeDeadline = Date.now() + 20000;
+        while (Date.now() < stabilizeDeadline) {
+          const [cr] = await chrome.scripting.executeScript({
+            target: { tabId: bgTab.id }, world: "MAIN",
+            func: () => {
+              const root = document.getElementById("global-user-permissions-root");
+              const pinia = root?.__vue_app__?.config?.globalProperties?.$pinia;
+              const permData = pinia?.state?.value?.userPermissions?.actorPermissionsData?.data;
+              const rawData = Array.isArray(permData)
+                ? permData
+                : (Array.isArray(permData?.toolCategories) ? permData.toolCategories : null);
+              if (!Array.isArray(rawData)) return 0;
+              let count = 0;
+              for (const cat of rawData) {
+                for (const tool of (cat.tools || [])) {
+                  // Count old-style (selected) OR new-style (dimensionGrants) non-None items
+                  const hasSelected = tool.adminRole?.selected || tool.editRole?.selected || tool.viewRole?.selected;
+                  const hasGrants = (tool.dimensionGrants?.length ?? 0) > 0;
+                  if (hasSelected || hasGrants) count++;
+                }
+              }
+              return count;
+            },
+          });
+          const currentCount = cr?.result ?? 0;
+          if (currentCount > 0 && currentCount === lastNonNoneCount) {
+            stableRounds++;
+            if (stableRounds >= 3) break;
+          } else {
+            stableRounds = 0;
+            lastNonNoneCount = currentCount;
+          }
+          await new Promise(r => setTimeout(r, 600));
+        }
+
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id }, world: "MAIN",
+          func: (sectionsArg) => { try {
+            // Build displayName → "sect.item" key map
+            // Category-qualified keys take priority to disambiguate same-named tools across sections
+            const labelToKey = {};
+            const catLabelToKey = {}; // "SectionLabel:ItemLabel" → key
+            for (const sect of sectionsArg) {
+              for (const item of sect.items) {
+                labelToKey[item.label] = `${sect.id}.${item.id}`;
+                labelToKey[item.label.toLowerCase()] = `${sect.id}.${item.id}`;
+                const norm = item.label.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+                if (norm) labelToKey[norm] = `${sect.id}.${item.id}`;
+                // Category-qualified (exact match, used when tool name is ambiguous)
+                const sLabel = sect.label || sect.id;
+                const iLabel = item.label || item.id;
+                catLabelToKey[`${sLabel}:${iLabel}`] = `${sect.id}.${item.id}`;
+                catLabelToKey[`${sLabel.toLowerCase()}:${iLabel.toLowerCase()}`] = `${sect.id}.${item.id}`;
+              }
+            }
+
+            function resolveKey(catDisplayName, toolDisplayName) {
+              if (!toolDisplayName) return null;
+              // Try category-qualified first (resolves same-label tools in different sections)
+              if (catDisplayName) {
+                const catKey = `${catDisplayName}:${toolDisplayName}`;
+                const hit = catLabelToKey[catKey] || catLabelToKey[catKey.toLowerCase()];
+                if (hit) return hit;
+              }
+              return labelToKey[toolDisplayName] ||
+                     labelToKey[toolDisplayName.toLowerCase()] ||
+                     labelToKey[toolDisplayName.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim()] ||
+                     null;
+            }
+
+            const perms = {};
+            const unmatched = [];
+            const allToolsDebug = [];
+
+            // ── Primary: Pinia userPermissions.actorPermissionsData ──────────
+            const root = document.getElementById("global-user-permissions-root");
+            const pinia = root?.__vue_app__?.config?.globalProperties?.$pinia;
+            const permData = pinia?.state?.value?.userPermissions?.actorPermissionsData?.data;
+            const rawData = Array.isArray(permData)
+              ? permData
+              : (Array.isArray(permData?.toolCategories) ? permData.toolCategories : null);
+
+            if (Array.isArray(rawData)) {
+              const levelOrder = { None: 0, View: 1, Edit: 2, Admin: 3 };
+              for (const category of rawData) {
+                for (const tool of (category.tools || [])) {
+                  // Build roleName → level map from the tool's role objects
+                  const roleNameToLevel = {};
+                  if (tool.noneRole?.name)  roleNameToLevel[tool.noneRole.name]  = "None";
+                  if (tool.viewRole?.name)  roleNameToLevel[tool.viewRole.name]  = "View";
+                  if (tool.editRole?.name)  roleNameToLevel[tool.editRole.name]  = "Edit";
+                  if (tool.adminRole?.name) roleNameToLevel[tool.adminRole.name] = "Admin";
+
+                  // Method 1: dimensionGrants (new-style per-scope grants)
+                  let levelFromGrants = "None";
+                  for (const grant of (tool.dimensionGrants || [])) {
+                    const grantLevel = roleNameToLevel[grant.role];
+                    if (grantLevel && (levelOrder[grantLevel] ?? 0) > (levelOrder[levelFromGrants] ?? 0)) {
+                      levelFromGrants = grantLevel;
+                    }
+                  }
+
+                  // Method 2: role.selected (old-style / form pre-population)
+                  let levelFromSelected = "None";
+                  if (tool.adminRole?.selected)     levelFromSelected = "Admin";
+                  else if (tool.editRole?.selected)  levelFromSelected = "Edit";
+                  else if (tool.viewRole?.selected)  levelFromSelected = "View";
+
+                  // Take the higher of both signals
+                  const level = (levelOrder[levelFromGrants] ?? 0) >= (levelOrder[levelFromSelected] ?? 0)
+                    ? levelFromGrants : levelFromSelected;
+
+                  allToolsDebug.push(`[${category.displayName}] ${tool.displayName}=${level}`);
+                  const key = resolveKey(category.displayName, tool.displayName);
+                  if (!key) {
+                    unmatched.push(`[${category.displayName}] ${tool.displayName}`);
+                    continue;
+                  }
+                  // For duplicates (same key): take max, but prefer dimensionGrants signal when available
+                  const existing = perms[key];
+                  if (!existing) {
+                    perms[key] = level;
+                  } else if ((levelOrder[levelFromGrants] ?? 0) > 0) {
+                    // This occurrence has real grants — trust it over old-style selected
+                    if ((levelOrder[levelFromGrants] ?? 0) > (levelOrder[existing] ?? 0)) {
+                      perms[key] = levelFromGrants;
+                    }
+                  } else if ((levelOrder[level] ?? 0) > (levelOrder[existing] ?? 0)) {
+                    perms[key] = level;
+                  }
+                }
+              }
+            }
+
+            return {
+              ok: true,
+              permissions: perms,
+              foundCount: Object.keys(perms).length,
+              unmatched,
+              allToolsDebug,
+              pageUrl: window.location.href,
+            };
+          } catch(e) { return { ok: false, error: e.message + " @ " + e.stack?.split("\n")[1] }; }
+          },
+          args: [sections],
+        });
+
+        await chrome.tabs.remove(bgTab.id).catch(() => {});
+        bgTab = null;
+
+        const data = result?.result;
+        if (!data?.ok) throw new Error(data?.error ? `Skript: ${data.error}` : "Skript selhal při čtení oprávnění");
+
+        sendResponse({ success: true, permissions: data.permissions, foundCount: data.foundCount, unmatched: data.unmatched || [], allToolsDebug: data.allToolsDebug || [], pageUrl: data.pageUrl });
+      } catch (err) {
+        if (bgTab) await chrome.tabs.remove(bgTab.id).catch(() => {});
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
 });
+
+async function finalizeInventoryAgeScan(queue) {
+  const allRows = Object.values(queue.results || {}).flat();
+  const results = {
+    scannedAt: new Date().toISOString(),
+    marketsScanned: Object.keys(queue.results || {}),
+    rowsByMarket: queue.results || {},
+  };
+  await chrome.storage.local.set({
+    [INVENTORY_AGE_RESULTS_KEY]: results,
+    [INVENTORY_AGE_PROGRESS_KEY]: { active: false, phase: "done", rowsSoFar: allRows.length, error: null },
+  });
+  await chrome.storage.local.remove(INVENTORY_AGE_QUEUE_KEY);
+  console.log(`[BG] inventoryAgeScan: done, ${allRows.length} rows across ${results.marketsScanned.length} market(s).`);
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTask(tabId);
@@ -2020,6 +3646,37 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 
   if (taskState.taskType === "violationsExport") {
+    if (taskState.violationStage === "onSwitcher") {
+      if (taskState.processing) return;
+      taskState.processing = true;
+      const nextMarket = taskState.violationsMarketQueue[taskState.violationsMarketIndex];
+      const marketLabel = nextMarket?.label || nextMarket?.code || null;
+      const sellerName = taskState.violationsSellerName;
+      await new Promise(r => setTimeout(r, 1500));
+      const result = await chrome.tabs.sendMessage(tabId, {
+        action: "DO_ACCOUNT_SELECT",
+        sellerName,
+        marketLabel,
+      }).catch(() => ({ success: false }));
+      taskState.processing = false;
+      if (result?.success) {
+        taskState.violationStage = "waitSwitchDone";
+      } else {
+        console.warn("[Violations] DO_ACCOUNT_SELECT failed, going to violations directly");
+        taskState.violationStage = "collectPolicy";
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}${TASK_CONFIG.violationsExport.relativePath}` });
+      }
+      return;
+    }
+
+    if (taskState.violationStage === "waitSwitchDone") {
+      if (!tab.url?.includes("/account-switcher/")) {
+        taskState.violationStage = "collectPolicy";
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}${TASK_CONFIG.violationsExport.relativePath}` });
+      }
+      return;
+    }
+
     try {
       await runViolationsScript(tabId);
     } catch (error) {
@@ -2027,6 +3684,176 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       clearTask(tabId);
     }
 
+    return;
+  }
+
+  if (taskState.taskType === "notifPrefsEmail") {
+    console.log(`[NotifPrefs] onUpdated stage=${taskState.notifStage} url=${tab.url}`);
+
+    if (taskState.notifStage === "onSwitcher") {
+      if (taskState.processing) return;
+      taskState.processing = true;
+      const nextMarket = (taskState.notifMarketQueue || [])[taskState.notifMarketIndex];
+      const marketLabel = nextMarket?.label || nextMarket?.code || null;
+      const sellerName = taskState.notifSellerName;
+      console.log(`[NotifPrefs] DO_ACCOUNT_SELECT seller=${sellerName} market=${marketLabel}`);
+      await new Promise((r) => setTimeout(r, 1500));
+      const result = await chrome.tabs.sendMessage(tabId, {
+        action: "DO_ACCOUNT_SELECT",
+        sellerName,
+        marketLabel,
+      }).catch(() => ({ success: false }));
+      taskState.processing = false;
+      console.log(`[NotifPrefs] DO_ACCOUNT_SELECT result=${result?.success}`);
+      if (result?.success) {
+        taskState.notifStage = "waitSwitchDone";
+      } else {
+        console.warn("[NotifPrefs] DO_ACCOUNT_SELECT failed, going to preferences directly");
+        taskState.notifStage = "collectPrefs";
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}/notifications/preferences` });
+      }
+      return;
+    }
+
+    if (taskState.notifStage === "waitSwitchDone") {
+      if (!tab.url?.includes("/account-switcher/")) {
+        taskState.notifStage = "collectPrefs";
+        console.log(`[NotifPrefs] navigating to preferences`);
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}/notifications/preferences` });
+      }
+      return;
+    }
+
+    if (taskState.notifStage === "collectPrefs") {
+      if (!tab.url?.includes("/notifications/preferences")) {
+        console.log(`[NotifPrefs] wrong URL after save (${tab.url}), navigating back`);
+        await chrome.tabs.update(tabId, { url: `${taskState.origin}/notifications/preferences` });
+        return;
+      }
+      taskState.notifLastReloadTime = Date.now();
+      console.log(`[NotifPrefs] collectPrefs reload, timerRunning=${taskState.notifPrefsTimerRunning}`);
+
+      if (taskState.notifPrefsTimerRunning) return;
+      taskState.notifPrefsTimerRunning = true;
+
+      const capturedTabId = tabId;
+      const STABILITY_MS = 6000;
+
+      const checkAndInject = async () => {
+        const st = taskStateByTabId.get(capturedTabId);
+        if (!st || st.taskType !== "notifPrefsEmail" || st.notifStage !== "collectPrefs") return;
+
+        const age = Date.now() - (st.notifLastReloadTime || 0);
+        if (age < STABILITY_MS) {
+          console.log(`[NotifPrefs] reloaded ${age}ms ago, waiting…`);
+          setTimeout(checkAndInject, STABILITY_MS - age + 300);
+          return;
+        }
+
+        if ((st.notifPrefsInjectAttempts || 0) >= 6) {
+          console.error("[NotifPrefs] too many inject attempts, aborting");
+          clearTask(capturedTabId);
+          return;
+        }
+        st.notifPrefsInjectAttempts = (st.notifPrefsInjectAttempts || 0) + 1;
+        // Reset timer flag BEFORE inject so a post-inject reload can start a new cycle
+        st.notifPrefsTimerRunning = false;
+
+        console.log(`[NotifPrefs] stable ${age}ms — injecting (attempt ${st.notifPrefsInjectAttempts})`);
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: capturedTabId },
+            files: ["notification_preferences.js"],
+          });
+          console.log(`[NotifPrefs] injection complete`);
+        } catch (error) {
+          console.error("[NotifPrefs] injection failed:", error);
+          clearTask(capturedTabId);
+        }
+      };
+
+      setTimeout(checkAndInject, STABILITY_MS);
+      return;
+    }
+
+    return;
+  }
+
+  if (taskState.taskType === "inventoryAgeScan") {
+    if (taskState.processing) return;
+    if (taskState.expectedUrl && !tab.url.startsWith(taskState.expectedUrl)) return;
+    taskState.processing = true;
+
+    (async () => {
+      try {
+        const stored = await chrome.storage.local.get(INVENTORY_AGE_QUEUE_KEY);
+        const queue = stored[INVENTORY_AGE_QUEUE_KEY];
+        if (!queue) { clearTask(tabId); return; }
+
+        if (taskState.phase === "switch") {
+          // /home loaded — navigate to inventory age page
+          const targetUrl = `https://${queue.baseDomain}${INVENTORY_AGE_PATH}`;
+          taskStateByTabId.set(tabId, {
+            taskType: "inventoryAgeScan", tabId,
+            phase: "scrape",
+            expectedUrl: `https://${queue.baseDomain}${INVENTORY_AGE_PATH}`,
+          });
+          await chrome.storage.local.set({
+            [INVENTORY_AGE_PROGRESS_KEY]: {
+              active: true, phase: "load",
+              currentMarket: queue.markets[queue.currentIndex]?.label || "??",
+              page: 1, rowsSoFar: 0, startedAt: queue.startedAt, error: null,
+            },
+          });
+          await chrome.tabs.update(tabId, { url: targetUrl });
+          return;
+        }
+
+        if (taskState.phase === "scrape" && tab.url?.includes(INVENTORY_AGE_PATH)) {
+          const mkt = queue.markets[queue.currentIndex];
+          await chrome.storage.local.set({
+            [INVENTORY_AGE_PROGRESS_KEY]: {
+              active: true, phase: "scrape",
+              currentMarket: mkt?.label || "??",
+              page: 1, rowsSoFar: 0, startedAt: queue.startedAt, error: null,
+            },
+          });
+
+          if (queue.dryRun) {
+            // Generate fake rows for dry run
+            const fakeRows = Array.from({ length: 12 }, (_, i) => ({
+              asin: `B00FAKE${i.toString().padStart(4,"0")}`,
+              sku: `SKU-DRYRUN-${i}`, fnsku: `X00FAKE${i}`,
+              title: `Dry Run Product ${i + 1}`,
+              ageBuckets: { "0-60": 5, "61-90": 2, "91-180": 1, "181-330": i === 3 ? 19 : 0, "331-365": 0, "366-455": 0, "456+": i === 7 ? 3 : 0 },
+              totalUnits: 5 + i, onHand: i > 2 ? 5 + i : 0,
+              excessUnits: i === 1 ? 10 : 0,
+              recommendedMinUnits: 3, recommendedMinDoS: 14 + i * 3,
+              estAisTotal: "--", recommendedAction: i === 0 ? "Restock 5 units today at FBA" : "",
+              sellThroughRaw: "0.5", yourPriceRaw: "€12.99",
+            }));
+            const mktKey = mkt?.label || "DRY";
+            queue.results[mktKey] = fakeRows;
+            queue.currentIndex++;
+            await chrome.storage.local.set({ [INVENTORY_AGE_QUEUE_KEY]: queue });
+            await finalizeInventoryAgeScan(queue);
+            clearTask(tabId);
+            return;
+          }
+
+          // Real scrape — send message to content script
+          clearTask(tabId);
+          await chrome.tabs.sendMessage(tabId, { action: "SCRAPE_INVENTORY_AGE", tabId }).catch(e => {
+            console.error("[BG] SCRAPE_INVENTORY_AGE send error:", e);
+            chrome.storage.local.set({ [INVENTORY_AGE_PROGRESS_KEY]: { active: false, phase: "done", error: e.message } });
+          });
+        }
+      } catch (error) {
+        console.error("[BG] inventoryAgeScan onUpdated error:", error);
+        await chrome.storage.local.set({ [INVENTORY_AGE_PROGRESS_KEY]: { active: false, phase: "done", error: error.message } });
+        clearTask(tabId);
+      }
+    })();
     return;
   }
 
@@ -2062,30 +3889,254 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     return;
   }
 
-  if (taskState.taskType === "listShippingTemplates") {
-    if (tab.url?.includes("/sbr")) {
-      (async () => {
-        try {
-          await injectShippingPriceChanger(tabId);
-          const [result] = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: () => window.__listShippingTemplates(),
+  if (taskState.taskType === "deleteTemplate") {
+    if (taskState.processing) {
+      console.log(`[BG] deleteTemplate: already processing — ignoring onUpdated for "${tab.url}"`);
+      return;
+    }
+    if (taskState.expectedUrl && !tab.url.startsWith(taskState.expectedUrl)) {
+      console.log(`[BG] deleteTemplate: unexpected URL "${tab.url}" — skipping`);
+      return;
+    }
+
+    taskState.processing = true;
+
+    (async () => {
+      let queue;
+      try {
+        const stored = await chrome.storage.local.get(DELETE_QUEUE_KEY);
+        queue = stored[DELETE_QUEUE_KEY];
+        if (!queue) { clearTask(tabId); return; }
+
+        // ── Phase "switch": /home loaded, account switched — navigate to /sbr.
+        if (taskState.phase === "switch") {
+          const sbrUrl = buildShippingTemplatesUrl(queue.baseDomain);
+          taskStateByTabId.set(tabId, {
+            taskType: "deleteTemplate",
+            tabId,
+            phase: "delete",
+            expectedUrl: `https://${queue.baseDomain}/sbr`,
           });
-          const templates = result?.result || [];
-          console.log(`[BG] listShippingTemplates: found ${templates.length} template(s).`);
-          await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: templates });
-        } catch (error) {
-          console.error("[BG] listShippingTemplates error:", error);
-          await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: [] });
-        } finally {
+          await chrome.tabs.update(tabId, { url: sbrUrl });
+          return;
+        }
+
+        if (!tab.url?.includes("/sbr")) { return; }
+
+        const template = queue.templates[queue.currentIndex];
+        if (!template) { clearTask(tabId); return; }
+
+        const marketTag = template.marketCode ? `[${template.marketCode}] ` : "";
+        console.log(`[BG] deleteTemplate: deleting "${marketTag}${template.name}" (${queue.currentIndex + 1}/${queue.templates.length})`);
+
+        await injectShippingPriceChanger(tabId);
+
+        let r;
+        try {
+          const [execResult] = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: (name) => window.__deleteShippingTemplate(name),
+            args: [template.name],
+          });
+          r = execResult?.result || { success: false, error: "No result from __deleteShippingTemplate", deleted: false };
+        } catch (err) {
+          const isNavigation = /frame|removed|detached|destroyed|navigat/i.test(err.message || "");
+          r = isNavigation
+            ? { success: true, navigationDelete: true }
+            : { success: false, error: `Script error: ${err.message}` };
+        }
+
+        if (r.success) {
+          queue.deleted++;
+          console.log(`[BG] deleteTemplate: ✓ "${template.name}" deleted.`);
+        } else {
+          console.warn(`[BG] deleteTemplate: ✗ "${template.name}": ${r.error}`);
+          queue.errors.push({ template: template.name, error: r.error || "Unknown error" });
+        }
+
+        queue.currentIndex++;
+        const hasMore = queue.currentIndex < queue.templates.length;
+        const nextTemplate = queue.templates[queue.currentIndex];
+        const nextLabel = nextTemplate
+          ? (nextTemplate.marketCode ? `[${nextTemplate.marketCode}] ` : "") + nextTemplate.name
+          : "";
+
+        await chrome.storage.local.set({
+          [DELETE_PROGRESS_KEY]: {
+            active: hasMore,
+            current: queue.currentIndex,
+            total: queue.templates.length,
+            deleted: queue.deleted,
+            label: nextLabel,
+            error: queue.errors.map((e) => `${e.template}: ${e.error}`).join("; "),
+          },
+        });
+
+        if (hasMore) {
+          await chrome.storage.local.set({ [DELETE_QUEUE_KEY]: queue });
+          const delBase = queue.baseDomain || new URL(tab.url).hostname;
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          if (nextTemplate.mkid) {
+            taskStateByTabId.set(tabId, {
+              taskType: "deleteTemplate", tabId,
+              phase: "switch", expectedUrl: `https://${delBase}`,
+            });
+            await chrome.tabs.update(tabId, { url: buildShippingTemplatesSwitchUrl(nextTemplate, delBase) });
+          } else {
+            taskStateByTabId.set(tabId, {
+              taskType: "deleteTemplate", tabId,
+              phase: "delete", expectedUrl: `https://${delBase}/sbr`,
+            });
+            await chrome.tabs.update(tabId, { url: buildShippingTemplatesUrl(delBase) });
+          }
+        } else {
+          await chrome.storage.local.remove(DELETE_QUEUE_KEY);
           clearTask(tabId);
         }
-      })();
-    }
+      } catch (error) {
+        console.error("[BG] deleteTemplate error:", error);
+        await chrome.storage.local.set({
+          [DELETE_PROGRESS_KEY]: {
+            active: false,
+            current: queue?.currentIndex ?? 0,
+            total: queue?.templates?.length ?? 0,
+            deleted: queue?.deleted ?? 0,
+            label: "",
+            error: error.message || String(error),
+          },
+        }).catch(() => {});
+        await chrome.storage.local.remove(DELETE_QUEUE_KEY).catch(() => {});
+        clearTask(tabId);
+      } finally {
+        if (taskStateByTabId.get(tabId) === taskState) taskState.processing = false;
+      }
+    })();
+    return;
+  }
+
+  if (taskState.taskType === "listShippingTemplates") {
+    if (taskState.processing) return;
+    if (taskState.expectedUrl && !tab.url.startsWith(taskState.expectedUrl)) return;
+
+    taskState.processing = true;
+    (async () => {
+      let keepTaskAlive = false;
+      try {
+        const phase = taskState.phase || "load";
+
+        // ── Phase "switch": /home has loaded, account is now switched.
+        //    Navigate to /sbr to collect templates.
+        if (phase === "switch") {
+          const stored = await chrome.storage.local.get(SPC_MARKET_LOAD_QUEUE_KEY);
+          const mq = stored[SPC_MARKET_LOAD_QUEUE_KEY];
+          if (!mq) { clearTask(tabId); return; }
+          const sbrUrl = buildShippingTemplatesUrl(mq.baseDomain);
+          keepTaskAlive = true;
+          taskStateByTabId.set(tabId, {
+            taskType: "listShippingTemplates",
+            tabId,
+            phase: "load",
+            expectedUrl: `https://${mq.baseDomain}/sbr`,
+          });
+          await chrome.tabs.update(tabId, { url: sbrUrl });
+          return;
+        }
+
+        // ── Phase "load": /sbr has loaded, collect templates.
+        if (!tab.url?.includes("/sbr")) { taskState.processing = false; return; }
+
+        await injectShippingPriceChanger(tabId);
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => window.__listShippingTemplates(),
+        });
+        const templates = result?.result || [];
+
+        const stored = await chrome.storage.local.get(SPC_MARKET_LOAD_QUEUE_KEY);
+        const marketQueue = stored[SPC_MARKET_LOAD_QUEUE_KEY];
+
+        if (marketQueue) {
+          const currentMarket = marketQueue.markets[marketQueue.currentIndex];
+          const currentOrigin = currentMarket.origin
+            || (currentMarket.domain ? `https://${currentMarket.domain}` : DEFAULT_SELLER_CENTRAL_ORIGIN);
+          const marketCode = getMarketCodeFromOrigin(currentOrigin);
+          const tagged = templates.map((t) => ({
+            ...t,
+            origin: currentOrigin,
+            marketCode,
+            mkid: currentMarket.mkid || "",
+            mcid: currentMarket.mcid || "",
+            globalAccountId: currentMarket.globalAccountId || "",
+          }));
+          console.log(`[BG] listShippingTemplates [${marketCode}]: found ${templates.length} template(s).`);
+
+          marketQueue.accumulated.push(...tagged);
+          marketQueue.currentIndex++;
+
+          if (marketQueue.currentIndex < marketQueue.markets.length) {
+            keepTaskAlive = true;
+            await chrome.storage.local.set({ [SPC_MARKET_LOAD_QUEUE_KEY]: marketQueue });
+            const nextMarket = marketQueue.markets[marketQueue.currentIndex];
+            if (nextMarket.mkid) {
+              // Switch account first, then load
+              const switchUrl = buildShippingTemplatesSwitchUrl(nextMarket, marketQueue.baseDomain);
+              taskStateByTabId.set(tabId, {
+                taskType: "listShippingTemplates",
+                tabId,
+                phase: "switch",
+                expectedUrl: `https://${marketQueue.baseDomain}`,
+              });
+              await chrome.tabs.update(tabId, { url: switchUrl });
+            } else {
+              const sbrUrl = buildShippingTemplatesUrl(marketQueue.baseDomain);
+              taskStateByTabId.set(tabId, {
+                taskType: "listShippingTemplates",
+                tabId,
+                phase: "load",
+                expectedUrl: `https://${marketQueue.baseDomain}/sbr`,
+              });
+              await chrome.tabs.update(tabId, { url: sbrUrl });
+            }
+            return;
+          }
+
+          console.log(`[BG] listShippingTemplates: total ${marketQueue.accumulated.length} template(s) across ${marketQueue.currentIndex} market(s).`);
+          await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: marketQueue.accumulated });
+          await chrome.storage.local.remove(SPC_MARKET_LOAD_QUEUE_KEY);
+        } else {
+          console.log(`[BG] listShippingTemplates: found ${templates.length} template(s).`);
+          await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: templates });
+        }
+      } catch (error) {
+        console.error("[BG] listShippingTemplates error:", error);
+        await chrome.storage.local.set({ [SHIPPING_TEMPLATE_LIST_KEY]: [] });
+        await chrome.storage.local.remove(SPC_MARKET_LOAD_QUEUE_KEY).catch(() => {});
+      } finally {
+        if (taskStateByTabId.get(tabId) === taskState) taskState.processing = false;
+        if (!keepTaskAlive) clearTask(tabId);
+      }
+    })();
     return;
   }
 
   if (taskState.taskType === "priceChange") {
+    // ── Processing lock — prevents re-entrant execution when onUpdated fires
+    // multiple times for the same template (e.g. post-save redirect triggers
+    // onUpdated while the original applyChange handler is still running).
+    if (taskState.processing) {
+      console.log(`[BG] priceChange: already processing — ignoring onUpdated for "${tab.url}"`);
+      return;
+    }
+
+    // ── URL guard — only process if the current URL matches what we navigated to.
+    // This blocks spurious onUpdated calls caused by Amazon's post-save redirects.
+    if (taskState.expectedUrl && !tab.url.startsWith(taskState.expectedUrl)) {
+      console.log(`[BG] priceChange: unexpected URL "${tab.url}" (expected "${taskState.expectedUrl}") — skipping`);
+      return;
+    }
+
+    taskState.processing = true;
+
     (async () => {
       let queue;
       try {
@@ -2096,149 +4147,67 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const template = queue.templates[queue.currentIndex];
         if (!template) { clearTask(tabId); return; }
 
-        const origin = queue.origin || DEFAULT_SELLER_CENTRAL_ORIGIN;
-        const listUrl = origin + SHIPPING_TEMPLATES_PATH;
         const phase = taskState.phase || "selectEdit";
+
+        // ── Phase "switch": /home loaded, account switched — navigate to /sbr.
+        if (phase === "switch") {
+          const pcBase = queue.baseDomain || new URL(tab.url).hostname;
+          taskStateByTabId.set(tabId, {
+            taskType: "priceChange", phase: "selectEdit", tabId,
+            expectedUrl: `https://${pcBase}/sbr`,
+          });
+          await chrome.tabs.update(tabId, { url: buildShippingTemplatesUrl(pcBase) });
+          return;
+        }
+
+        // ── Safety check: verify the template name is actually in the selected list.
+        const templateInQueue = queue.templates.some((t) => t.name === template.name);
+        if (!templateInQueue) {
+          console.error(`[BG] priceChange: "${template.name}" not found in selected templates — aborting.`);
+          clearTask(tabId);
+          return;
+        }
 
         await injectShippingPriceChanger(tabId);
 
         let r;
 
         if (phase === "selectEdit") {
-          console.log(`[BG] priceChange: selecting "${template.name}" (${queue.currentIndex + 1}/${queue.templates.length})`);
+          const marketTag = template.marketCode ? `[${template.marketCode}] ` : "";
+          console.log(`[BG] priceChange: getting edit URL for "${marketTag}${template.name}" (${queue.currentIndex + 1}/${queue.templates.length})`);
 
-          // ── Step 1: click template in sidebar (sets SPA state) ──────────
-          let selectResult;
+          let urlRes;
           try {
             const [s] = await chrome.scripting.executeScript({
               target: { tabId },
-              func: (name) => window.__selectTemplateInSidebar(name),
+              func: (name) => window.__getTemplateEditUrl(name),
               args: [template.name],
             });
-            selectResult = s?.result;
+            urlRes = s?.result;
           } catch (err) {
-            console.error(`[BG] priceChange: __selectTemplateInSidebar threw:`, err);
-            selectResult = { selected: false, error: err.message };
+            console.error(`[BG] priceChange: __getTemplateEditUrl threw:`, err);
+            urlRes = { found: false, error: err.message };
           }
 
-          if (!selectResult?.selected) {
-            r = { success: false, error: selectResult?.error || "Sidebar selection failed.", changed: 0 };
+          if (!urlRes?.found) {
+            r = { success: false, error: urlRes?.error || "Template edit URL not found.", changed: 0 };
           } else {
-            // ── Step 2: open the actions dropdown (async — needs a wait) ─────
-            // Amazon's dropdown items are in the DOM but hidden; click trigger to reveal.
-            try {
-              await chrome.scripting.executeScript({
-                target: { tabId },
-                func: () => {
-                  const trigger = document.querySelector(
-                    ".a-button-dropdown .a-dropdown-trigger, " +
-                    "button.a-dropdown-trigger, " +
-                    "[data-action='a-dropdown-button'], " +
-                    ".a-button-dropdown button"
-                  );
-                  if (trigger) {
-                    console.log("[SBREdit] Opening actions dropdown…");
-                    trigger.click();
-                  }
-                },
-              });
-            } catch (err) {
-              console.warn("[BG] priceChange: dropdown trigger failed:", err.message);
-            }
-
-            // Wait for dropdown animation / DOM update
-            await new Promise((res) => setTimeout(res, 500));
-
-            // ── Step 3: read Edit element href from now-visible dropdown ─────
-            let editUrl = null;
-            try {
-              const [hrefRes] = await chrome.scripting.executeScript({
-                target: { tabId },
-                func: () => {
-                  const sidebar = document.querySelector("#sbrui_element_shippingTemplateLinks");
-
-                  // 1) Check <li id="edit"> for a nested anchor with a real href
-                  const editLi = document.getElementById("edit");
-                  if (editLi) {
-                    const a = editLi.querySelector("a[href]");
-                    const href = a?.href || a?.getAttribute("href");
-                    if (href && !href.endsWith("#") && !href.startsWith("javascript") && href.includes("/sbr")) {
-                      console.log("[SBREdit] Found Edit href in #edit li:", href);
-                      return href;
-                    }
-                  }
-
-                  // 2) Scan all visible anchors whose text is "Edit" / "Bearbeiten"
-                  for (const el of document.querySelectorAll("a[href]")) {
-                    const t = (el.textContent || el.getAttribute("aria-label") || "").trim();
-                    if ((t === "Edit" || t === "Bearbeiten") && el.offsetParent !== null && !sidebar?.contains(el)) {
-                      const href = el.href;
-                      if (href && !href.endsWith("#") && !href.startsWith("javascript") && href.includes("/sbr")) {
-                        console.log("[SBREdit] Found Edit href by text scan:", href);
-                        return href;
-                      }
-                    }
-                  }
-
-                  console.log("[SBREdit] No Edit href found — will click element.");
-                  return null;
-                },
-              });
-              editUrl = hrefRes?.result || null;
-            } catch (err) {
-              console.warn("[BG] priceChange: Edit href read failed:", err.message);
-            }
-
-            if (editUrl) {
-              console.log(`[BG] priceChange: navigating to Edit href for "${template.name}": ${editUrl}`);
-              taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "applyChange", tabId });
-              await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
-              await chrome.tabs.update(tabId, { url: editUrl });
-              return;
-            }
-
-            // ── Step 4: no href — click Edit element and catch navigation ────
-            console.log(`[BG] priceChange: clicking Edit element for "${template.name}".`);
-            try {
-              const [execResult] = await chrome.scripting.executeScript({
-                target: { tabId },
-                func: () => {
-                  // Click the Edit element that's already visible from Step 2
-                  const editLi = document.getElementById("edit");
-                  const editEl = editLi?.querySelector("a") || editLi
-                    || [...document.querySelectorAll("a, button, li")].find((el) => {
-                        const t = el.textContent.trim();
-                        return (t === "Edit" || t === "Bearbeiten") && el.offsetParent !== null;
-                      });
-                  if (!editEl) return { clicked: false };
-                  console.log("[SBREdit] Clicking Edit element:", editEl.tagName, editEl.id);
-                  editEl.click();
-                  return { clicked: true };
-                },
-              });
-              // If click caused navigation, this executeScript result is irrelevant —
-              // the navErr catch below handles it. If it stayed in SPA, apply price change.
-              if (execResult?.result?.clicked) {
-                await new Promise((res) => setTimeout(res, 800));
-                const [applyResult] = await chrome.scripting.executeScript({
-                  target: { tabId },
-                  func: (cfg) => window.__applyPriceChange(cfg),
-                  args: [queue.config],
-                });
-                r = applyResult?.result || { success: false, error: "No result from applyPriceChange", changed: 0 };
-              } else {
-                r = { success: false, error: "Edit element not found in dropdown.", changed: 0 };
-              }
-            } catch (navErr) {
-              console.log(`[BG] priceChange: full-page navigation for "${template.name}" — waiting for edit page.`);
-              taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "applyChange", tabId });
-              await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
-              return;
-            }
+            const pcOrigin = `https://${queue.baseDomain || new URL(tab.url).hostname}`;
+            const fullEditUrl = pcOrigin + urlRes.editUrl;
+            console.log(`[BG] priceChange: navigating to edit URL for "${template.name}": ${fullEditUrl}`);
+            // Store expectedUrl so we only react to the edit page load, not any other navigation.
+            taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "applyChange", tabId, expectedUrl: fullEditUrl });
+            await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
+            await chrome.tabs.update(tabId, { url: fullEditUrl });
+            return;
           }
         } else {
-          // phase === "applyChange": we're on the edit page after full-page navigation.
+          // phase === "applyChange": on the edit page, apply prices and save.
           console.log(`[BG] priceChange: applying on edit page for "${template.name}" — url: ${tab.url}`);
+
+          // Clear expectedUrl immediately so any post-save navigation is ignored.
+          taskState.expectedUrl = null;
+
           try {
             const [execResult] = await chrome.scripting.executeScript({
               target: { tabId },
@@ -2247,14 +4216,22 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             });
             r = execResult?.result || { success: false, error: "applyPriceChange returned null — script not injected?", changed: 0 };
           } catch (err) {
-            console.warn(`[BG] priceChange: applyPriceChange executeScript threw: ${err.message}`);
-            r = { success: false, error: `Script error: ${err.message}`, changed: 0 };
+            // Frame destroyed = Save button was clicked and Amazon navigated away.
+            // This means the save succeeded — treat it as success with unknown changed count.
+            const isNavigation = /frame|removed|detached|destroyed|navigat/i.test(err.message || "");
+            if (isNavigation) {
+              console.log(`[BG] priceChange: frame navigated after Save for "${template.name}" — treating as success.`);
+              r = { success: true, changed: 0, navigationSave: true };
+            } else {
+              console.warn(`[BG] priceChange: applyPriceChange threw: ${err.message}`);
+              r = { success: false, error: `Script error: ${err.message}`, changed: 0 };
+            }
           }
         }
 
         if (r.success) {
           queue.totalChanged += r.changed || 0;
-          console.log(`[BG] priceChange: ✓ ${r.changed} price(s) changed in "${template.name}"`);
+          console.log(`[BG] priceChange: ✓ "${template.name}" done — ${r.navigationSave ? "saved (via navigation)" : `${r.changed} price(s) changed`}`);
         } else {
           console.warn(`[BG] priceChange: ✗ "${template.name}": ${r.error}`);
           queue.errors.push({ template: template.name, error: r.error || "Unknown error" });
@@ -2264,25 +4241,41 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const hasMore = queue.currentIndex < queue.templates.length;
         const nextTemplate = queue.templates[queue.currentIndex];
 
+        const nextLabel = nextTemplate
+          ? (nextTemplate.marketCode ? `[${nextTemplate.marketCode}] ` : "") + nextTemplate.name
+          : "";
+
         await chrome.storage.local.set({
           [PRICE_CHANGE_PROGRESS_KEY]: {
             active: hasMore,
             current: queue.currentIndex,
             total: queue.templates.length,
             totalChanged: queue.totalChanged,
-            label: nextTemplate?.name || "",
+            label: nextLabel,
             error: queue.errors.map((e) => `${e.template}: ${e.error}`).join("; "),
           },
         });
 
         if (hasMore) {
           await chrome.storage.local.set({ [PRICE_CHANGE_QUEUE_KEY]: queue });
-          // Navigate back to list page for the next template
-          taskStateByTabId.set(tabId, { taskType: "priceChange", phase: "selectEdit", tabId });
+          const pcBase = queue.baseDomain || new URL(tab.url).hostname;
           await new Promise((resolve) => setTimeout(resolve, 1500));
-          await chrome.tabs.update(tabId, { url: listUrl });
+          if (nextTemplate.mkid) {
+            taskStateByTabId.set(tabId, {
+              taskType: "priceChange", phase: "switch", tabId,
+              expectedUrl: `https://${pcBase}`,
+            });
+            await chrome.tabs.update(tabId, { url: buildShippingTemplatesSwitchUrl(nextTemplate, pcBase) });
+          } else {
+            taskStateByTabId.set(tabId, {
+              taskType: "priceChange", phase: "selectEdit", tabId,
+              expectedUrl: `https://${pcBase}/sbr`,
+            });
+            await chrome.tabs.update(tabId, { url: buildShippingTemplatesUrl(pcBase) });
+          }
         } else {
           await chrome.storage.local.remove(PRICE_CHANGE_QUEUE_KEY);
+          void maybeDownloadConsoleLog(tabId, "shipping_price_change");
           clearTask(tabId);
         }
       } catch (error) {
@@ -2299,6 +4292,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         }).catch(() => {});
         await chrome.storage.local.remove(PRICE_CHANGE_QUEUE_KEY).catch(() => {});
         clearTask(tabId);
+      } finally {
+        // Always release the lock so the task state doesn't get stuck.
+        if (taskStateByTabId.get(tabId) === taskState) {
+          taskState.processing = false;
+        }
       }
     })();
     return;
@@ -2363,3 +4361,763 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     await saveBookmarks(bookmarks);
   })();
 });
+
+// ── Brand Scanner orchestration ───────────────────────────────────────────────
+// Runs in background so it survives popup closing when a new tab gets focus.
+
+const BRAND_SCANNER_PATH = "/performance/account/health/product-policies";
+const BRAND_SCANNER_FALLBACK_ORIGIN = "https://sellercentral.amazon.de";
+
+function brandScannerGetOrigin(tabUrl) {
+  try {
+    const u = new URL(tabUrl);
+    if (/sellercentral\.amazon\./i.test(u.hostname)) return u.origin;
+  } catch (_) { /* ignore */ }
+  return BRAND_SCANNER_FALLBACK_ORIGIN;
+}
+
+function brandScannerWaitForTabLoad(tabId, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    function cleanup() {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      clearInterval(stopPoller);
+    }
+
+    function onUpdated(id, changeInfo) {
+      if (id !== tabId) return;
+      if (changeInfo.status === "complete") { cleanup(); resolve(); }
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Tab load timeout")); }, timeoutMs);
+
+    const stopPoller = setInterval(() => {
+      if (brandScannerStopRequested) { cleanup(); reject(new Error("Stopped")); }
+    }, 100);
+  });
+}
+
+const BRAND_SCANNER_STORAGE_KEY = "_brandScannerState";
+let brandScannerStopRequested = false;
+
+async function brandScannerOrchestrate(brands, originTabUrl) {
+  brandScannerStopRequested = false;
+  const origin = brandScannerGetOrigin(originTabUrl);
+
+  // Clear previous results and mark scan as running
+  await chrome.storage.local.set({
+    [BRAND_SCANNER_STORAGE_KEY]: { status: "running", total: brands.length, rows: [] }
+  });
+
+  function broadcast(msg) {
+    chrome.runtime.sendMessage(msg).catch(() => {});
+  }
+
+  async function appendStorageRow(rowEntry) {
+    const data = (await chrome.storage.local.get(BRAND_SCANNER_STORAGE_KEY))[BRAND_SCANNER_STORAGE_KEY] || { rows: [] };
+    data.rows.push(rowEntry);
+    await chrome.storage.local.set({ [BRAND_SCANNER_STORAGE_KEY]: data });
+  }
+
+  // Open a single reusable tab for the whole scan
+  let scanTab;
+  try {
+    scanTab = await chrome.tabs.create({
+      url: `${origin}${BRAND_SCANNER_PATH}`,
+      active: false
+    });
+    await brandScannerWaitForTabLoad(scanTab.id);
+  } catch (err) {
+    broadcast({ type: "BRAND_SCANNER_DONE" });
+    return;
+  }
+
+  async function stopScan(scanned) {
+    chrome.tabs.remove(scanTab.id).catch(() => {});
+    broadcast({ type: "BRAND_SCANNER_STOPPED", scanned, total: brands.length });
+    const fd = (await chrome.storage.local.get(BRAND_SCANNER_STORAGE_KEY))[BRAND_SCANNER_STORAGE_KEY] || { rows: [] };
+    fd.status = "stopped";
+    await chrome.storage.local.set({ [BRAND_SCANNER_STORAGE_KEY]: fd });
+  }
+
+  // Navigate the shared tab to a brand variant URL and wait for the result
+  async function fetchBrandVariant(variant) {
+    const url = `${origin}${BRAND_SCANNER_PATH}?t=regulatory-compliance&s=${encodeURIComponent(variant)}`;
+
+    // Register load listener BEFORE navigating to avoid race condition
+    const loadPromise = brandScannerWaitForTabLoad(scanTab.id);
+    try {
+      await chrome.tabs.update(scanTab.id, { url });
+      await loadPromise;
+    } catch (err) {
+      return { rows: null, error: err.message }; // "Stopped" or load error
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => { cleanup(); resolve({ rows: null, error: "Timeout" }); }, 15000);
+      const stopPoller = setInterval(() => {
+        if (brandScannerStopRequested) { cleanup(); resolve({ rows: null, error: "Stopped" }); }
+      }, 100);
+
+      function cleanup() {
+        clearTimeout(timeout);
+        clearInterval(stopPoller);
+        chrome.runtime.onMessage.removeListener(onMsg);
+      }
+      function onMsg(msg, sender) {
+        if (msg.type === "BRAND_SCANNER_PAGE_RESULT" && sender.tab?.id === scanTab.id) {
+          cleanup();
+          resolve(msg);
+        }
+      }
+      chrome.runtime.onMessage.addListener(onMsg);
+    });
+  }
+
+  for (let i = 0; i < brands.length; i++) {
+    if (brandScannerStopRequested) { await stopScan(i); return; }
+
+    const brand = brands[i];
+
+    // Build fallback variants: original → UPPERCASE → lowercase (skip duplicates)
+    const variants = [brand];
+    const upper = brand.toUpperCase();
+    const lower = brand.toLowerCase();
+    if (upper !== brand) variants.push(upper);
+    if (lower !== brand && lower !== upper) variants.push(lower);
+
+    let result = null;
+    for (const variant of variants) {
+      result = await fetchBrandVariant(variant);
+      if (result.error === "Stopped") break;
+      if (result.error) break;
+      if (result.rows && result.rows.length > 0) break;
+    }
+
+    if (brandScannerStopRequested) { await stopScan(i); return; }
+
+    const entry = { brand, rows: result.rows, error: result.error || null, index: i, total: brands.length };
+    await appendStorageRow(entry);
+    broadcast({ type: "BRAND_SCANNER_RESULT", ...entry });
+  }
+
+  chrome.tabs.remove(scanTab.id).catch(() => {});
+
+  // Mark done in storage
+  const finalData = (await chrome.storage.local.get(BRAND_SCANNER_STORAGE_KEY))[BRAND_SCANNER_STORAGE_KEY] || { rows: [] };
+  finalData.status = "done";
+  await chrome.storage.local.set({ [BRAND_SCANNER_STORAGE_KEY]: finalData });
+
+  broadcast({ type: "BRAND_SCANNER_DONE" });
+}
+
+// ── Console log capture ────────────────────────────────────────────────────────
+let capturedLogEntries = [];
+let logCaptureEnabled = false;
+
+// ── Request Payment / Disbursement orchestration ──────────────────────────────
+// Runs entirely in background — survives popup closing or tab switching.
+
+let disbursementStopRequested = false;
+
+function disbursementBroadcast(msg) {
+  chrome.runtime.sendMessage(msg).catch(() => {});
+}
+
+function disbursementWaitForTabLoad(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    let sawLoading = false;
+    function cleanup() {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+    }
+    function onUpdated(id, changeInfo) {
+      if (id !== tabId) return;
+      if (changeInfo.status === "loading") sawLoading = true;
+      if (changeInfo.status === "complete" && sawLoading) { cleanup(); resolve(); }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Navigation timeout")); }, timeoutMs);
+  });
+}
+
+// Wait until the tab's URL contains /payments/disburse (user completed step-up auth)
+function disbursementWaitForAuthOnTab(tabId, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    function cleanup() {
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+    }
+    function check(url) {
+      if (url && url.includes("/payments/disburse")) { cleanup(); resolve(); }
+    }
+    function onUpdated(id, changeInfo) {
+      if (id !== tabId || settled) return;
+      if (changeInfo.status === "complete") {
+        chrome.tabs.get(tabId).then((t) => check(t.url)).catch(() => {});
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    // Check current URL immediately in case tab is already on the right page
+    chrome.tabs.get(tabId).then((t) => check(t.url)).catch(() => {});
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Auth wait timeout")); }, timeoutMs);
+  });
+}
+
+// Top-level page type detector — usable by any feature, not just disbursement.
+async function getPageTypeStandalone(tabId, retries = 4) {
+  for (let i = 0; i < retries; i++) {
+    const result = await chrome.tabs.sendMessage(tabId, { action: "GET_PAGE_TYPE" })
+      .catch(() => null);
+    if (result && result.type !== "other") return result;
+    if (i < retries - 1) await new Promise((r) => setTimeout(r, 500));
+  }
+  return { type: "other", url: "" };
+}
+
+// Wait for a tab to reach "complete" status — simpler than disbursementWaitForTabLoad,
+// does NOT require seeing "loading" first (avoids race conditions on redirects).
+function waitForTabComplete(tabId, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    function onUpdated(id, changeInfo) {
+      if (id === tabId && changeInfo.status === "complete") done();
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    const timer = setTimeout(done, timeoutMs);
+  });
+}
+
+// ── Market Switch with account-switcher handling ──────────────────────────────
+async function marketSwitchWithAccountCheck(tabId, targetUrl, sellerName, marketLabel) {
+  console.log("[SellerTools] marketSwitchWithAccountCheck START tabId=%d seller=%s market=%s", tabId, sellerName, marketLabel);
+
+  const loadPromise = waitForTabComplete(tabId, 20000);
+  await chrome.tabs.update(tabId, { url: targetUrl });
+  await loadPromise;
+  console.log("[SellerTools] marketSwitchWithAccountCheck: tab reached complete, settling 2s…");
+
+  await new Promise((r) => setTimeout(r, 2000));
+
+  if (!sellerName) {
+    console.log("[SellerTools] marketSwitchWithAccountCheck: no sellerName, stopping");
+    return;
+  }
+
+  console.log("[SellerTools] marketSwitchWithAccountCheck: sending DO_ACCOUNT_SELECT");
+  const selectResult = await chrome.tabs.sendMessage(tabId, {
+    action: "DO_ACCOUNT_SELECT",
+    sellerName,
+    marketLabel: marketLabel || null,
+  }).catch((e) => ({ success: false, error: "sendMessage failed: " + e.message }));
+  console.log("[SellerTools] marketSwitchWithAccountCheck: DO_ACCOUNT_SELECT result:", JSON.stringify(selectResult));
+
+  if (selectResult?.success) {
+    await new Promise((resolve) => {
+      const deadline = Date.now() + 20000;
+      let settled = false;
+      function cleanup() { settled = true; chrome.tabs.onUpdated.removeListener(onUpdated); }
+      function onUpdated(id, changeInfo) {
+        if (id !== tabId || settled) return;
+        if (changeInfo.status === "complete") {
+          chrome.tabs.get(tabId).then((t) => {
+            if (t.url && !t.url.includes("/account-switcher/")) { cleanup(); resolve(); }
+            else if (Date.now() > deadline) { cleanup(); resolve(); }
+          }).catch(() => { cleanup(); resolve(); });
+        }
+      }
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      if (Date.now() > deadline) { cleanup(); resolve(); }
+    });
+  }
+  console.log("[SellerTools] marketSwitchWithAccountCheck: DONE");
+}
+
+async function disbursementOrchestrate(markets, originTabId, currentDomain, currentMarket, currentSellerName) {
+  disbursementStopRequested = false;
+
+  function broadcast(msg) { disbursementBroadcast({ ...msg, type: "DISBURSEMENT_" + msg.type }); }
+
+  // Use the original tab directly — it has a valid full session
+  const workTab = { id: originTabId };
+
+  let completed = 0;
+  const results = []; // { market, amount }
+
+  // Build pre-flight URL — include current market params to preserve account context
+  // (without them, agency sub-accounts get redirected to the account switcher page)
+  function buildDisburseUrl(market) {
+    const url = new URL(`https://${currentDomain}/payments/disburse`);
+    const mkid = market?.ids?.mons_sel_mkid || "";
+    const mcid = market?.ids?.mons_sel_dir_mcid || "";
+    const paid = market?.globalAccountId || "";
+    if (mkid) url.searchParams.set("mons_sel_mkid", mkid);
+    if (mcid) url.searchParams.set("mons_sel_dir_mcid", mcid);
+    if (paid) url.searchParams.set("mons_sel_dir_paid", paid);
+    url.searchParams.set("ignore_selection_changed", "true");
+    return url.toString();
+  }
+
+  // Ask content script what page type is currently loaded — more reliable than URL matching.
+  // Retries a few times in case the content script is still loading after a redirect.
+  async function getPageType(tabId, retries = 4) {
+    for (let i = 0; i < retries; i++) {
+      const result = await chrome.tabs.sendMessage(tabId, { action: "GET_PAGE_TYPE" })
+        .catch(() => null);
+      if (result && result.type !== "other") return result;
+      if (i < retries - 1) await new Promise((r) => setTimeout(r, 500));
+    }
+    return { type: "other", url: "" };
+  }
+
+  // Try to auto-select the seller on the account switcher page, then wait for
+  // redirect back to /payments/disburse. Falls back to manual auth wait.
+  async function handleUnexpectedUrl(tabId, retryUrl, marketLabel = null) {
+    const pageType = await getPageType(tabId);
+
+    if (pageType.type === "account-switcher" && currentSellerName) {
+      broadcast({ type: "PROGRESS", completed, total: markets.length, market: "", step: "selecting_account" });
+      const selectResult = await chrome.tabs.sendMessage(tabId, {
+        action: "DO_ACCOUNT_SELECT",
+        sellerName: currentSellerName,
+        marketLabel,
+      }).catch(() => ({ success: false }));
+
+      if (selectResult?.success) {
+        // Use waitForAuthOnTab — checks current URL immediately and watches future navigations,
+        // doesn't require catching the "loading" event before it fires.
+        await disbursementWaitForAuthOnTab(tabId, 30000).catch(() => {});
+        const afterType = await getPageType(tabId);
+        if (afterType.type === "disburse") return; // success
+      }
+    }
+
+    // Fallback: ask user to handle login / account selection manually
+    broadcast({ type: "AWAIT_AUTH" });
+    await disbursementWaitForAuthOnTab(tabId, 120000);
+    if (retryUrl) {
+      const retryLoad = disbursementWaitForTabLoad(tabId, 30000);
+      await chrome.tabs.update(tabId, { url: retryUrl });
+      await retryLoad;
+    }
+  }
+
+  try {
+    // Pre-flight: navigate to /payments/disburse with current market context to trigger
+    // step-up auth if needed. The user can log in directly in the tab.
+    broadcast({ type: "PROGRESS", completed, total: markets.length, market: "", step: "auth_check" });
+    const preflightMarket = currentMarket || markets[0];
+    const preflightLoadPromise = disbursementWaitForTabLoad(workTab.id, 30000);
+    await chrome.tabs.update(workTab.id, { url: buildDisburseUrl(preflightMarket) });
+    await preflightLoadPromise;
+
+    // Wait briefly — the disburse page may itself redirect to account-switcher or login
+    await new Promise((r) => setTimeout(r, 1500));
+    const preflightType = await getPageType(workTab.id);
+    if (preflightType.type !== "disburse") {
+      await handleUnexpectedUrl(workTab.id, null, preflightMarket?.label || null);
+    }
+
+    if (disbursementStopRequested) { broadcast({ type: "STOPPED", completed }); return; }
+
+    for (const market of markets) {
+      if (disbursementStopRequested) {
+        broadcast({ type: "STOPPED", completed });
+        return;
+      }
+
+      broadcast({ type: "PROGRESS", completed, total: markets.length, market: market.label, step: "switching" });
+
+      // Navigate directly to /payments/disburse with market switch params combined —
+      // avoids a second navigation that could invalidate the step-up auth cookie
+      const marketDisburseUrl = buildDisburseUrl(market);
+      const disburseLoadPromise = disbursementWaitForTabLoad(workTab.id, 30000);
+      await chrome.tabs.update(workTab.id, { url: marketDisburseUrl });
+      await disburseLoadPromise;
+
+      // Wait briefly — the disburse page may itself redirect to account-switcher or login
+      await new Promise((r) => setTimeout(r, 1500));
+      const pageTypeAfterNav = await getPageType(workTab.id);
+      if (pageTypeAfterNav.type !== "disburse") {
+        await handleUnexpectedUrl(workTab.id, marketDisburseUrl, market.label);
+      }
+
+      if (disbursementStopRequested) { broadcast({ type: "STOPPED", completed }); return; }
+
+      // Settle time for KAT components to initialize on the payments page
+      await new Promise((r) => setTimeout(r, 2000));
+
+      if (disbursementStopRequested) { broadcast({ type: "STOPPED", completed }); return; }
+
+      // Step 3: click the disbursement button via content script
+      broadcast({ type: "PROGRESS", completed, total: markets.length, market: market.label, step: "disbursing" });
+      const response = await chrome.tabs.sendMessage(workTab.id, { action: "DO_DISBURSEMENT" })
+        .catch((e) => ({ success: false, error: e.message }));
+
+      if (!response?.success) {
+        broadcast({ type: "ERROR", market: market.label, error: response?.error || "Unknown error" });
+        return;
+      }
+
+      completed++;
+      results.push({ market: market.label, amount: response.amount || null });
+      broadcast({ type: "PROGRESS", completed, total: markets.length, market: market.label, step: "done" });
+
+      if (completed < markets.length) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+
+    broadcast({ type: "DONE", completed, results });
+  } catch (err) {
+    broadcast({ type: "ERROR", market: "", error: err.message });
+  }
+}
+
+// ── SPP Management helpers ────────────────────────────────────────────────────
+
+function sppPollInTab(tabId, func, intervalMs = 400, timeoutMs = 12000) {
+  return new Promise(resolve => {
+    const deadline = Date.now() + timeoutMs;
+    function check() {
+      chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func })
+        .then(([r]) => {
+          if (r?.result) { resolve(true); return; }
+          if (Date.now() > deadline) { resolve(false); return; }
+          setTimeout(check, intervalMs);
+        })
+        .catch(() => {
+          // executeScript can fail transiently during page load/reload — retry instead of failing
+          if (Date.now() > deadline) { resolve(false); return; }
+          setTimeout(check, intervalMs);
+        });
+    }
+    setTimeout(check, intervalMs);
+  });
+}
+
+async function sppOpenAddToClientModal(tabId, actorId) {
+  await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: () => {
+      const root = document.getElementById("global-user-permissions-root");
+      root?.__vue_app__?.config?.globalProperties?.$router?.push("/user-management/users");
+    },
+  });
+
+  // Clear any pre-filled client filter (kat-dropdown[data-test="client"] with part="clear-btn")
+  await new Promise(r => setTimeout(r, 700));
+  const [hadFilter] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: () => {
+      const clientDropdown = document.querySelector('kat-dropdown[data-test="client"]');
+      if (!clientDropdown) return false;
+      if (!clientDropdown.getAttribute('value') && !clientDropdown.value) return false;
+      const clearBtn = clientDropdown.shadowRoot?.querySelector('button[part="clear-btn"]');
+      if (!clearBtn) return false;
+      clearBtn.click();
+      // Programmatic click clears the DOM but may not dispatch kat-change that Vue watches.
+      // Dispatch it manually so Vue's @kat-change handler fires and re-fetches the employee list.
+      clientDropdown.dispatchEvent(new CustomEvent('kat-change', {
+        bubbles: true,
+        composed: true,
+        detail: { value: '', id: '' },
+      }));
+      return true;
+    },
+  });
+  // If we cleared a filter, wait for the API re-fetch to complete and table to re-render
+  await new Promise(r => setTimeout(r, hadFilter?.result ? 2000 : 400));
+
+  const rowsReady = await sppPollInTab(tabId, () =>
+    !!document.querySelector('kat-table-row[data-test="user"]')
+  );
+  if (!rowsReady) throw new Error("User table rows did not appear");
+  await new Promise(r => setTimeout(r, 500));
+
+  const [openRes] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: (id) => {
+      for (const row of document.querySelectorAll('kat-table-row[data-test="user"]')) {
+        if (!(row.querySelector('.user-column a')?.getAttribute('href') || '').includes(id)) continue;
+        const toggleBtn = row.querySelector('kat-dropdown-button')
+          ?.shadowRoot?.querySelector('button[part="dropdown-button-toggle-button"]');
+        if (!toggleBtn) return { error: "Toggle button not found in shadow DOM" };
+        toggleBtn.click();
+        return { ok: true };
+      }
+      return { error: `Row not found for actorId: ${id}` };
+    },
+    args: [actorId],
+  });
+  if (openRes?.result?.error) throw new Error(openRes.result.error);
+  await new Promise(r => setTimeout(r, 400));
+
+  const [addRes] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: (id) => {
+      for (const row of document.querySelectorAll('kat-table-row[data-test="user"]')) {
+        if (!(row.querySelector('.user-column a')?.getAttribute('href') || '').includes(id)) continue;
+        const btn = row.querySelector('kat-dropdown-button')
+          ?.shadowRoot?.querySelector('button[data-action="add_to_client"]');
+        if (!btn) return { error: "add_to_client not found in shadow DOM" };
+        if (btn.disabled) return { error: "add_to_client is disabled" };
+        btn.click();
+        return { ok: true };
+      }
+      return { error: "Row not found for add_to_client click" };
+    },
+    args: [actorId],
+  });
+  if (addRes?.result?.error) throw new Error(addRes.result.error);
+
+  // Wait for modal
+  const modalOk = await sppPollInTab(tabId, () =>
+    !!document.querySelector('kat-modal kat-tab[data-qa="add-client"]')
+  , 300, 8000);
+  if (!modalOk) throw new Error("Add-to-client modal did not appear");
+  await new Promise(r => setTimeout(r, 400));
+}
+
+async function sppApplyRolePermissions(tabId, employeeId, clientId, rolePermissions, sections) {
+  console.log(`[SPP perms] START emp=${employeeId} client=${clientId} keys=${Object.keys(rolePermissions || {}).length}`);
+
+  // Navigate to the permissions edit page and force a FULL reload (simulates F5).
+  // In-app router.push() leaves a stuck loading spinner — full reload always initializes correctly.
+  // Listener must be registered BEFORE calling reload to avoid missing the "complete" event.
+  const permUrl = `https://${SPP_DOMAIN}/account/permissions#/edit-user-permissions/${employeeId}/${clientId}`;
+  await chrome.tabs.update(tabId, { url: permUrl });
+  await new Promise(r => setTimeout(r, 400)); // let hash change settle
+
+  await new Promise(resolve => {
+    let sawLoading = false;
+    const timer = setTimeout(resolve, 25000);
+    const listener = (tid, info) => {
+      if (tid !== tabId) return;
+      if (info.status === 'loading') { sawLoading = true; return; }
+      if (info.status === 'complete' && sawLoading) {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timer); resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener); // register BEFORE reload
+    chrome.tabs.reload(tabId);                    // then trigger reload
+  });
+
+  // Extra wait for Vue SPA initialization and initial API call after reload
+  await new Promise(r => setTimeout(r, 1500));
+
+  // Wait for Pinia toolCategories — fresh data guaranteed after full reload
+  const ready = await sppPollInTab(tabId, () => {
+    const root = document.getElementById("global-user-permissions-root");
+    const tc = root?.__vue_app__?.config?.globalProperties?.$pinia
+      ?.state?.value?.userPermissions?.actorPermissionsData?.data?.toolCategories;
+    return Array.isArray(tc) && tc.length > 0;
+  }, 500, 30000);
+  if (!ready) throw new Error("Stránka oprávnění se nenačetla");
+
+  // Wait for radio buttons to render
+  await sppPollInTab(tabId, () => document.querySelectorAll('input[type="radio"]').length > 50, 300, 10000);
+  await new Promise(r => setTimeout(r, 800));
+
+  // Apply permissions: match tool rows by display name and click the right radio
+  const [applyRes] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: (permissions, sects) => {
+      // Build lowercased displayName → "section.item" key map
+      const labelToKey = {};
+      for (const s of sects) {
+        for (const it of s.items) {
+          labelToKey[it.label.toLowerCase().trim()] = `${s.id}.${it.id}`;
+        }
+      }
+
+      let changed = 0;
+      const allRows = document.querySelectorAll('[data-qa^="toolRow"]');
+      for (const row of allRows) {
+        const nameEl = row.querySelector('[data-qa="tool-item-display-name"]');
+        if (!nameEl) continue;
+        const displayName = (nameEl.textContent || '').trim();
+        const key = labelToKey[displayName.toLowerCase()];
+        if (!key) continue;
+
+        const desiredLevel = (permissions[key] || 'None').toLowerCase();
+        // toolRow is inside kat-col-xs-7 (label column) — go up 2 levels to reach the full row
+        // Radio inputs have no data-qa; instead their parent CELL has data-qa="none"/"view"/"edit"/"admin"
+        const fullRow = row.parentElement?.parentElement;
+        const radioBtn = fullRow?.querySelector(`[data-qa="${desiredLevel}"] input[type="radio"]`);
+        if (radioBtn && !radioBtn.checked) {
+          radioBtn.click();
+          changed++;
+        }
+      }
+      return { changed, totalRows: allRows.length, sampleKey: Object.keys(permissions).slice(0, 3).join(',') };
+    },
+    args: [rolePermissions, sections],
+  });
+  console.log(`[SPP perms] ${employeeId}/${clientId}: changed=${applyRes?.result?.changed}/${applyRes?.result?.totalRows} rows`);
+
+  if ((applyRes?.result?.changed ?? 0) === 0) return; // Nothing to save
+
+  await new Promise(r => setTimeout(r, 400));
+
+  // Click Save Changes button
+  const [saveRes] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: () => {
+      // Find kat-button by label attribute
+      const byLabel = document.querySelector('kat-button[label="Save Changes"]');
+      const btn = byLabel || [...document.querySelectorAll('kat-button, button')]
+        .find(b => (b.getAttribute('label') || b.textContent || '').trim() === 'Save Changes');
+      if (!btn) return { error: 'Save Changes button not found' };
+      const inner = btn.shadowRoot?.querySelector('button');
+      if (inner) inner.click(); else btn.click();
+      return { ok: true };
+    },
+  });
+  if (saveRes?.result?.error) throw new Error(`Permissions save: ${saveRes.result.error}`);
+  await new Promise(r => setTimeout(r, 2000));
+}
+
+async function sppAssignOne(tabId, employee, clients) {
+  await sppOpenAddToClientModal(tabId, employee.id);
+
+  const targetNames = new Set(clients.map(c => c.name.trim().toLowerCase()));
+  let anyChecked = false;
+
+  // Ensure "Add Client" tab is active
+  await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const modal = document.querySelector('kat-modal');
+      const addTab = modal?.querySelector('kat-tab[data-qa="add-client"]');
+      const addTabBtn = addTab?.shadowRoot?.querySelector('[role="tab"]');
+      if (addTabBtn) { addTabBtn.click(); await sleep(400); }
+    },
+  });
+  await new Promise(r => setTimeout(r, 500));
+
+  // For each target client: type name in search box, find and click its checkbox
+  for (const clientName of targetNames) {
+    const [clientRes] = await chrome.scripting.executeScript({
+      target: { tabId }, world: "MAIN",
+      func: async (name) => {
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        const modal = document.querySelector('kat-modal');
+        if (!modal) return { error: 'Modal not found' };
+
+        const tabContent = modal.querySelector('[data-qa="add-client"]');
+        if (!tabContent) return { error: 'no add-client tab' };
+
+        // Type client name into search box (kat-input shadow DOM)
+        const searchKatInput = tabContent.querySelector('kat-input.search-input');
+        const searchInput = searchKatInput?.shadowRoot?.querySelector('input[part="input"]')
+          || searchKatInput?.shadowRoot?.querySelector('input');
+        if (!searchInput) {
+          // No search input means all clients are already assigned — not an error
+          return { ok: true, skipped: true, reason: 'already assigned to all clients' };
+        }
+
+        searchInput.focus();
+        // Clear existing value first
+        searchInput.select();
+        document.execCommand('selectAll', false);
+        document.execCommand('delete', false);
+        // Simulate real typing — execCommand triggers all browser input events kat-input listens to
+        document.execCommand('insertText', false, name);
+        await sleep(900); // Wait for live search to filter
+
+        // Find the matching kat-checkbox
+        let clientsList = tabContent.querySelector('.clients-list');
+        let katCheckboxes = clientsList ? [...clientsList.querySelectorAll('kat-checkbox')] : [];
+        // Wait up to 1.5s more if list not yet rendered
+        for (let w = 0; w < 8 && !katCheckboxes.length; w++) {
+          await sleep(200);
+          clientsList = tabContent.querySelector('.clients-list');
+          katCheckboxes = clientsList ? [...clientsList.querySelectorAll('kat-checkbox')] : [];
+        }
+
+        for (const katCb of katCheckboxes) {
+          const labelName = (katCb.getAttribute('label') || '').toLowerCase().trim();
+          if (labelName !== name && !labelName.includes(name) && !name.includes(labelName)) continue;
+
+          const checkDiv = katCb.shadowRoot?.querySelector('[role="checkbox"]');
+          const isDisabled = checkDiv
+            ? checkDiv.getAttribute('aria-disabled') === 'true'
+            : katCb.hasAttribute('disabled');
+          if (isDisabled) return { ok: true, skipped: true, reason: 'already assigned' };
+
+          const isChecked = checkDiv
+            ? checkDiv.getAttribute('aria-checked') === 'true'
+            : false;
+          if (isChecked) return { ok: true, skipped: true, reason: 'already checked' };
+
+          if (checkDiv) { checkDiv.click(); } else { katCb.click(); }
+          await sleep(300);
+          return { ok: true, checked: 1 };
+        }
+
+        return { ok: true, checked: 0, debug: `no match for "${name}", found ${katCheckboxes.length} checkboxes` };
+      },
+      args: [clientName],
+    });
+
+    if (clientRes?.result?.error) throw new Error(clientRes.result.error);
+    console.log(`[SPP assign] client "${clientName}":`, JSON.stringify(clientRes?.result));
+    if (clientRes?.result?.checked > 0) anyChecked = true;
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  // Wait for Vue to enable the Save button after checkbox changes
+  await new Promise(r => setTimeout(r, 800));
+
+  // Click "Save Changes"
+  const [saveRes] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const modal = document.querySelector('kat-modal');
+      if (!modal) return { ok: true, skipped: true };
+
+      const closeModal = () => {
+        // Try Cancel button first, then kat-modal close button
+        const cancelBtn = [...modal.querySelectorAll('kat-button')]
+          .find(b => (b.getAttribute('label') || '').toLowerCase() === 'cancel');
+        const inner = cancelBtn?.shadowRoot?.querySelector('button');
+        if (inner) inner.click();
+        else if (cancelBtn) cancelBtn.click();
+        else modal.querySelector('[part="close-button"], button[aria-label*="close" i]')?.click();
+      };
+
+      const saveBtn = modal.querySelector('kat-button[data-qa="add-client-save"]');
+      if (!saveBtn) { closeModal(); return { ok: true, skipped: true }; }
+
+      const saveBtnInner = saveBtn.shadowRoot?.querySelector('button');
+      const isDisabled = saveBtn.hasAttribute('disabled')
+        || saveBtn.getAttribute('disabled') === ''
+        || saveBtnInner?.disabled === true
+        || saveBtnInner?.getAttribute('aria-disabled') === 'true';
+      if (isDisabled) { closeModal(); return { ok: true, skipped: true }; }
+
+      if (saveBtnInner) { saveBtnInner.click(); } else { saveBtn.click(); }
+      await sleep(200);
+      return { ok: true };
+    },
+  });
+  if (saveRes?.result?.error) throw new Error(`Save: ${saveRes.result.error}`);
+  const saved = !saveRes?.result?.skipped;
+  if (saved) await new Promise(r => setTimeout(r, 1500));
+  return { saved, checked: anyChecked };
+}

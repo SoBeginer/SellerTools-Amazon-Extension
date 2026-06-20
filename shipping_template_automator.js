@@ -33,10 +33,18 @@
     "1-2D":   "1_2",
     "2-3D":   "2_3",
     "3-5D":   "3_5",
+    "4-5D":   "4_5",
+    "4-7D":   "4_7",
     "5-7D":   "5_7",
+    "5-10D":  "5_10",
+    "6-7D":   "6_7",
     "7-10D":  "7_10",
+    "7-21D":  "7_21",
+    "8-10D":  "8_10",
     "10-14D": "10_14",
+    "11-14D": "11_14",
     "14+D":   "14_99",
+    "15-21D": "15_21",
   };
 
   /**
@@ -58,6 +66,10 @@
    * EU service type IDs that are ALWAYS enabled — never click their checkbox.
    */
   const ALWAYS_ENABLED = new Set(["EU_STANDARD.DOMESTIC"]);
+
+  // Address types allowed on region rows. Set from config.addressTypes in main().
+  // Default: only STREET. Other values: POBOX, POSTFILIAL, PACKSTATION.
+  let _allowedAddressTypes = ["STREET"];
 
   // ─────────────────────────────────────────────────────────────────────────
   // LOGGING — all entries buffered for auto-download at completion
@@ -307,10 +319,11 @@
     // Amazon AUI sometimes binds the handler to .a-button rather than the inner button.
     if (getVisibleModal()) {
       log("confirmModal: modal still visible — clicking parent wrapper...");
-      const wrapper = modal.querySelector("#submitButtonInPopup") ||
+      const wrapper = modal.querySelector("#submitButtonInPopupWithCheckBox") ||
+                      modal.querySelector("#submitButtonInPopup") ||
                       modal.querySelector(".a-button-primary");
       if (wrapper) wrapper.click();
-      await sleep(300);
+      await sleep(500);
     }
 
     // Wait for the modal to close.
@@ -737,13 +750,20 @@
       if (!option) {
         const numericInput = (() => {
           if (typeof transitTime === "number") return transitTime;
-          const m = String(transitTime).match(/^(\d+)D?$/i);
-          return m ? parseInt(m[1], 10) : null;
+          const t = String(transitTime);
+          // Single number optionally followed by D: "2", "2D"
+          const single = t.match(/^(\d+)D?$/i);
+          if (single) return parseInt(single[1], 10);
+          // Range like "3-4D" or "3-4" → use upper bound for matching
+          const range = t.match(/^(\d+)-(\d+)D?$/i);
+          if (range) return parseInt(range[2], 10);
+          return null;
         })();
 
         if (numericInput !== null) {
           const parseRange = (val) => {
-            const m = val.match(/^(\d+)_(\d+)$/);
+            // Handles both "2_3" and "2-3D" option value formats
+            const m = val.match(/^(\d+)[_-](\d+)D?$/i);
             return m ? { min: parseInt(m[1], 10), max: parseInt(m[2], 10) } : null;
           };
 
@@ -1476,7 +1496,7 @@
           if (dontShowCb && !dontShowCb.checked) {
             log(`clearSectionRows: checking "Don't show this message again"...`);
             dontShowCb.click();
-            await sleep(150);
+            await sleep(600);  // give AUI time to re-render button after checkbox change
           }
         }
         await confirmModal(modal);
@@ -1508,26 +1528,43 @@
 
   async function setAddressTypes(row) {
     log("STEP: setAddressTypes");
-    // Street label text is in a sibling <span class="checkbox_label"> outside
-    // the a-checkbox div, so we can't find it by label text.
-    // Use name="address_type" value="STREET" to target directly.
-    const streetInput = row.querySelector("input[name='address_type'][value='STREET']");
-    if (!streetInput) {
-      log("setAddressTypes: 'Street' input not found — skipping.");
+    const allAddressTypes = [...row.querySelectorAll("input[name='address_type']")];
+    if (allAddressTypes.length === 0) {
+      log("setAddressTypes: no address_type inputs found — skipping.");
       return;
     }
-    if (streetInput.disabled) {
-      log("setAddressTypes: 'Street' is disabled (Amazon-controlled) — skipping.");
-      return;
+    const allowedUpper = _allowedAddressTypes.map((v) => v.toUpperCase());
+    log(`setAddressTypes: found ${allAddressTypes.length} input(s): [${allAddressTypes.map(i => `${i.value}(disabled=${i.disabled})`).join(", ")}]`);
+    log(`setAddressTypes: allowedUpper = [${allowedUpper.join(", ")}]`);
+
+    for (const input of allAddressTypes) {
+      const wantChecked = allowedUpper.includes(input.value.toUpperCase());
+      if (input.disabled) {
+        log(`setAddressTypes: "${input.value}" is disabled — skipping.`);
+        continue;
+      }
+      // Amazon a-checkbox: state tracked by "a-checkbox-checked" on the nearest div.a-checkbox.
+      // Click the <label> inside it — that's what Amazon's JS listens to.
+      const aDiv = input.closest("div.a-checkbox");
+      const clickTarget = aDiv ? (aDiv.querySelector("label") || aDiv) : input;
+      const getIsChecked = () => aDiv ? aDiv.classList.contains("a-checkbox-checked") : input.checked;
+      const isChecked = getIsChecked();
+      log(`setAddressTypes: "${input.value}" aDiv=${!!aDiv} labelFound=${!!(aDiv && aDiv.querySelector("label"))} isChecked=${isChecked} wantChecked=${wantChecked}`);
+      if (isChecked === wantChecked) {
+        log(`setAddressTypes: "${input.value}" already correct — skipping.`);
+        continue;
+      }
+      clickTarget.click();
+      await sleep(150);
+      const isCheckedAfter = getIsChecked();
+      log(`setAddressTypes: "${input.value}" after click → ${isCheckedAfter} ${isCheckedAfter === wantChecked ? "✓" : "✗ MISMATCH — trying dispatchEvent"}`);
+      if (isCheckedAfter !== wantChecked) {
+        // Fallback: dispatch a native mouse click on the input itself
+        input.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        await sleep(150);
+        log(`setAddressTypes: "${input.value}" after fallback click → ${getIsChecked()}`);
+      }
     }
-    if (streetInput.checked) {
-      log("setAddressTypes: 'Street' already checked — skipping.");
-      return;
-    }
-    const lbl = streetInput.closest("label");
-    (lbl || streetInput).click();
-    await sleep(60);
-    log("setAddressTypes: 'Street' checked ✓");
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1779,6 +1816,12 @@
       throw new Error(`${LOG} main: unsupported rateModel "${config.rateModel}". Only "shipment_based" supported.`);
     }
 
+    // ── 0. Address types ──
+    if (Array.isArray(config.addressTypes) && config.addressTypes.length > 0) {
+      _allowedAddressTypes = config.addressTypes;
+    }
+    log(`main: allowedAddressTypes = [${_allowedAddressTypes.join(", ")}]`);
+
     // ── 1. Template name ──
     await setTemplateName(config.templateName);
     await sleep(200);
@@ -1854,6 +1897,10 @@
       // The :not([style*='display: none']) variant is too broad — it matches the always-visible
       // "Add Regions" section container whose text looks like an error but isn't.
       ...document.querySelectorAll(".addRegionsBox[style*='display: block']"),
+      // Amazon error banner boxes — only visible ones with actual rendered text (not template placeholders)
+      // Filter is applied below: elements whose text contains "{|=" are unrendered Backbone templates.
+      ...[...document.querySelectorAll(".a-alert-error, .a-box-error")]
+        .filter(el => el.offsetParent !== null && !el.textContent.includes("{|=")),
     ];
     const errorItems = [...new Map(
       errorEls
@@ -1866,8 +1913,35 @@
     if (errorItems.length > 0) {
       warn(`VALIDATION ERRORS DETECTED (${errorItems.length}):`);
       errorItems.forEach((t, i) => warn(`  [${i + 1}] ${t}`));
+      // Amazon validation errors mean the form cannot be saved correctly.
+      // Abort save and surface the errors so the caller can fix them.
+      const errorSummary = errorItems.map((t) => t.replace(/^\[[^\]]+\]\s*/, "")).join(" | ");
+      throw new Error(`${LOG} Validation errors detected — aborting save. Errors: ${errorSummary}`);
     } else {
       log("Final validation scan: no error banners found ✓");
+    }
+
+    // ── Save ──
+    if (config.save !== false) {
+      await sleep(400);
+      const isSaveEl = (el) => {
+        const t = (el.textContent || el.value || el.getAttribute("aria-label") || "").trim().toLowerCase();
+        return t === "save" || t.includes("save template") || t.includes("save changes") ||
+               el.id === "submitButton-announce";
+      };
+      const saveBtn = [...document.querySelectorAll("button, input[type='submit']")].find(
+        (el) => !el.disabled && isSaveEl(el)
+      );
+      if (!saveBtn) {
+        warn("Save button not found — skipping save.");
+      } else {
+        log(`Clicking save: "${saveBtn.textContent.trim() || saveBtn.id}"`);
+        saveBtn.click();
+        await sleep(1500);
+        log("Save clicked ✓");
+      }
+    } else {
+      log("config.save=false — skipping save.");
     }
 
     log("════════════════════════════════════════");

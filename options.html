@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title data-i18n="pageTitle">SellerTools — Settings</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f0ede8;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px 60px;
+      color: #1a1a1a;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.09);
+      width: 100%;
+      max-width: 580px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 28px 32px 20px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .card-header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #111;
+      letter-spacing: -0.3px;
+    }
+
+    .card-header .version {
+      font-size: 12px;
+      color: #999;
+      margin-top: 3px;
+    }
+
+    .card-body {
+      padding: 24px 32px;
+    }
+
+    /* Section */
+    .section {
+      margin-bottom: 28px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    /* Row */
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 0;
+      border-bottom: 1px solid #f5f5f5;
+      gap: 12px;
+    }
+
+    .row:last-child { border-bottom: none; }
+
+    .row-label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .row-label span {
+      font-size: 14px;
+      font-weight: 500;
+      color: #222;
+    }
+
+    .row-label small {
+      font-size: 12px;
+      color: #999;
+      line-height: 1.4;
+    }
+
+    /* Toggle switch */
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      position: absolute;
+    }
+
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: #d1d5db;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-track::after {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .toggle input:checked + .toggle-track {
+      background: #3b82f6;
+    }
+
+    .toggle input:checked + .toggle-track::after {
+      transform: translateX(20px);
+    }
+
+    .toggle input:disabled + .toggle-track {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Segmented control (radio group) */
+    .seg-group {
+      display: flex;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #f9fafb;
+      flex-shrink: 0;
+    }
+
+    .seg-group label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 7px 13px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      color: #374151;
+      white-space: nowrap;
+      border-right: 1px solid #e5e7eb;
+      transition: background 0.15s, color 0.15s;
+      user-select: none;
+    }
+
+    .seg-group label:last-child { border-right: none; }
+
+    .seg-group input[type="radio"] { display: none; }
+
+    .seg-group label:has(input:checked) {
+      background: #3b82f6;
+      color: #fff;
+    }
+
+    /* Select */
+    .styled-select {
+      appearance: none;
+      -webkit-appearance: none;
+      background: #f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='7' viewBox='0 0 12 7'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23999' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center;
+      border: 1px solid #e5e7eb;
+      border-radius: 7px;
+      padding: 7px 30px 7px 11px;
+      font-size: 13px;
+      font-family: inherit;
+      color: #222;
+      cursor: pointer;
+      min-width: 180px;
+      flex-shrink: 0;
+    }
+
+    .styled-select:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+    }
+
+    /* Badge */
+    .badge {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      vertical-align: middle;
+      margin-left: 5px;
+    }
+
+    .badge-amber {
+      background: #fef3c7;
+      color: #b45309;
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: #f0f0f0;
+      margin: 4px 0 24px;
+    }
+
+    /* Footer actions */
+    .card-footer {
+      padding: 20px 32px 28px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 20px;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: #3b82f6;
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) { background: #2563eb; }
+
+    .btn-secondary {
+      background: #f1f5f9;
+      color: #374151;
+    }
+
+    .btn-secondary:hover:not(:disabled) { background: #e2e8f0; }
+
+    .btn-link {
+      background: none;
+      color: #3b82f6;
+      padding: 9px 4px;
+      font-size: 13px;
+      text-decoration: underline;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+    }
+
+    .btn-link:hover { color: #2563eb; }
+
+    /* Status / toast */
+    @keyframes toastPop {
+      0%   { opacity: 0; transform: translateY(4px) scale(0.95); }
+      15%  { opacity: 1; transform: translateY(0)   scale(1);    }
+      70%  { opacity: 1; transform: translateY(0)   scale(1);    }
+      100% { opacity: 0; transform: translateY(-2px) scale(0.97); }
+    }
+
+    #statusMsg {
+      font-size: 13px;
+      font-weight: 500;
+      color: #16a34a;
+      margin-left: auto;
+      opacity: 0;
+    }
+
+    #statusMsg.toast-play {
+      animation: toastPop 1.5s ease forwards;
+    }
+
+    #statusMsg.error { color: #dc2626; }
+
+    /* Diagnostics output */
+    #diagOutput {
+      display: none;
+      margin: 0 32px 24px;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-family: "Menlo", "Consolas", monospace;
+      font-size: 12px;
+      color: #374151;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="card-header">
+      <h1 data-i18n="title">SellerTools Settings</h1>
+      <div class="version" id="versionLabel">v1.0.0</div>
+    </div>
+
+    <div class="card-body">
+
+      <!-- General -->
+      <div class="section">
+        <div class="section-title" data-i18n="sectionGeneral">General</div>
+
+        <div class="row">
+          <div class="row-label">
+            <span data-i18n="labelLanguage">Language</span>
+          </div>
+          <select id="languageSelect" class="styled-select">
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Automation -->
+      <div class="section">
+        <div class="section-title" data-i18n="sectionAutomation">Automation</div>
+
+        <div class="row">
+          <div class="row-label">
+            <span data-i18n="labelConsoleLog">Console Log Download</span>
+            <small data-i18n="descConsoleLog">Auto-download browser console log after each feature completes</small>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="consoleLogToggle" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+
+        <div class="row">
+          <div class="row-label">
+            <span data-i18n="labelAiFeatures">AI Features <span class="badge badge-amber">In progress</span></span>
+            <small data-i18n="descAiFeatures">Enable paid AI-powered automation features</small>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="aiFeaturesToggle" disabled />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Account Profile -->
+      <div class="section">
+        <div class="section-title" data-i18n="sectionProfile">Account Profile</div>
+
+        <div class="row">
+          <div class="row-label">
+            <span data-i18n="labelAmazonModel">Amazon model</span>
+            <small data-i18n="descAmazonModel">How you fulfill orders on Amazon</small>
+          </div>
+          <div class="seg-group" id="amazonModelGroup">
+            <label><input type="radio" name="amazonModel" value="fba"><span>FBA</span></label>
+            <label><input type="radio" name="amazonModel" value="fbm"><span>FBM</span></label>
+            <label><input type="radio" name="amazonModel" value="fba_fbm"><span>FBA+FBM</span></label>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-label">
+            <span data-i18n="labelUserType">Your role</span>
+          </div>
+          <div class="seg-group" id="userTypeGroup">
+            <label><input type="radio" name="userType" value="seller"><span data-i18n="optSeller">Seller</span></label>
+            <label><input type="radio" name="userType" value="agency"><span data-i18n="optAgency">Freelancer / Agency</span></label>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-label">
+            <span data-i18n="labelMcf">MCF Orders</span>
+            <small data-i18n="descMcf">Using Multi-Channel Fulfillment via Amazon</small>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="mcfOrdersToggle" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+      </div>
+
+    </div><!-- /.card-body -->
+
+    <pre id="diagOutput"></pre>
+
+    <div class="card-footer">
+      <button class="btn btn-secondary" id="diagBtn" data-i18n="btnDiag">Run Diagnostics</button>
+      <button class="btn-link" id="clearCacheBtn" data-i18n="btnClearCache">Clear Cache</button>
+      <span id="statusMsg"></span>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
