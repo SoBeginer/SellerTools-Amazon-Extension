@@ -895,23 +895,47 @@ async function bgScrapeAccounts(domain, parentId, mkid) {
           break;
         }
 
-        // ── APPROACH 3: DOM ancestry + click-reveal (background tab, no focus steal) ──
-        // Vue's reactive updates use microtasks (not rAF), so they work in bg tabs.
-        // We click-reveal to distinguish SPNs from final accounts:
-        //   SPN clicked → reveals new account-details elements (sub-sellers)
-        //   Final account clicked → reveals country rows (no account-details class)
+        // ── APPROACH 3: Expand-all then read full DOM ──
+        // Click all top-level rows at once (30ms apart) → wait once 600ms → read full DOM.
+        // ~800ms total vs N×400ms sequential (e.g. 8 accounts = 3.2s → 0.8s).
+        // Vue reactive updates use microtasks (not rAF) so they work in background tabs.
+        // isCountry filter distinguishes SPN sub-sellers from country/marketplace rows.
         await new Promise(r => setTimeout(r, 400));
 
-        const domRows = await chrome.scripting.executeScript({
+        const _t0 = Date.now();
+
+        const topLevelLabels = await chrome.scripting.executeScript({
+          target: { tabId: bgTab.id },
+          func: () => [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+            .filter(b => b.offsetHeight > 0)
+            .map(b => {
+              const ft = b.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+              return ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+            }).filter(Boolean),
+        }).then(([r]) => r?.result || []).catch(() => []);
+
+        console.log("[bgScrapeAccounts] Expanding", topLevelLabels.length, "top-level accounts...");
+
+        for (const lbl of topLevelLabels) {
+          await bgAccountClickRow(bgTab.id, lbl);
+          await new Promise(r => setTimeout(r, 30));
+        }
+        await new Promise(r => setTimeout(r, 600));
+
+        const expandedRows = await chrome.scripting.executeScript({
           target: { tabId: bgTab.id },
           func: () => {
+            const COUNTRIES = new Set(["afghanistan","albania","algeria","andorra","angola","argentina","armenia","australia","austria","azerbaijan","bahrain","bangladesh","belarus","belgium","belize","benin","bhutan","bolivia","brazil","brunei","bulgaria","cambodia","cameroon","canada","chile","china","colombia","congo","costa rica","croatia","cuba","cyprus","czech republic","czechia","denmark","ecuador","egypt","el salvador","estonia","ethiopia","finland","france","georgia","germany","ghana","greece","guatemala","hungary","iceland","india","indonesia","iran","iraq","ireland","israel","italy","jamaica","japan","jordan","kazakhstan","kenya","kuwait","latvia","lebanon","liechtenstein","lithuania","luxembourg","malaysia","malta","mauritius","mexico","moldova","monaco","mongolia","montenegro","morocco","nepal","netherlands","new zealand","nicaragua","nigeria","north korea","north macedonia","norway","oman","pakistan","panama","paraguay","peru","philippines","poland","portugal","qatar","romania","russia","saudi arabia","senegal","serbia","singapore","slovakia","slovenia","south africa","south korea","spain","sri lanka","sweden","switzerland","taiwan","tajikistan","tanzania","thailand","tunisia","turkey","ukraine","united arab emirates","united kingdom","united states","uruguay","uzbekistan","venezuela","vietnam","yemen","zambia","zimbabwe"]);
+            const isCountry = lbl => COUNTRIES.has(lbl.replace(/\s*\(pending\s+registration\)/i, "").trim().toLowerCase());
             const rows = [];
             for (const btn of document.querySelectorAll(".full-page-account-switcher-account-details")) {
+              if (btn.offsetHeight === 0) continue;
               const ft = btn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
               const lbl = ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
-              if (!lbl) continue;
+              if (!lbl || isCountry(lbl)) continue;
               const isCurrent = /\(current\)/i.test(ft);
-              const ancestors = [];
+              // Ancestry traversal to detect parent SPN
+              let parentLabel = null;
               let el = btn.parentElement;
               while (el && el !== document.body) {
                 const cls = el.className || "";
@@ -922,17 +946,14 @@ async function bgScrapeAccounts(domain, parentId, mkid) {
                     !cls.includes("full-page-account-switcher-account-store") &&
                     !cls.includes("full-page-account-switcher-account-expander") &&
                     !cls.includes("full-page-account-switcher-account-label")) {
-                  ancestors.push(el);
+                  const pBtn = el.querySelector(".full-page-account-switcher-account-details");
+                  if (pBtn && pBtn !== btn) {
+                    const pft = pBtn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
+                    const plbl = pft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+                    if (plbl && !isCountry(plbl)) { parentLabel = plbl; break; }
+                  }
                 }
                 el = el.parentElement;
-              }
-              let parentLabel = null;
-              if (ancestors.length >= 2) {
-                const parentBtn = ancestors[1].querySelector(".full-page-account-switcher-account-details");
-                if (parentBtn && parentBtn !== btn) {
-                  const pft = parentBtn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
-                  parentLabel = pft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim() || null;
-                }
               }
               rows.push({ label: lbl, isCurrent, parentLabel });
             }
@@ -940,82 +961,22 @@ async function bgScrapeAccounts(domain, parentId, mkid) {
           },
         }).then(([r]) => r?.result || []).catch(() => []);
 
-        console.log("[bgScrapeAccounts] DOM rows:", domRows.length, domRows.map(r => r.label + (r.parentLabel ? " < " + r.parentLabel : "")).join(", "));
+        console.log(`[bgScrapeAccounts] Expand-all done in ${((Date.now() - _t0) / 1000).toFixed(2)}s — ${expandedRows.length} rows`);
 
-        for (const r of domRows) {
+        for (const r of expandedRows) {
           if (!accounts.has(r.label)) {
             accounts.set(r.label, { label: r.label, isCurrent: r.isCurrent, parent: r.parentLabel, hasChildren: false });
+          } else if (r.parentLabel && !accounts.get(r.label).parent) {
+            accounts.get(r.label).parent = r.parentLabel;
+          } else if (r.parentLabel && accounts.get(r.label).parent && accounts.get(r.label).parent !== r.parentLabel) {
+            const dupKey = `${r.label}::${r.parentLabel}`;
+            if (!accounts.has(dupKey)) {
+              accounts.set(dupKey, { label: r.label, isCurrent: r.isCurrent, parent: r.parentLabel, hasChildren: false });
+            }
           }
           if (r.parentLabel && accounts.has(r.parentLabel)) {
             accounts.get(r.parentLabel).hasChildren = true;
           }
-        }
-
-        const toCheck = domRows.filter(r => !r.parentLabel && !accounts.get(r.label)?.hasChildren).map(r => r.label);
-
-        for (const label of toCheck) {
-          // Per-iteration baseline: snapshot VISIBLE account-details BEFORE clicking.
-          // Uses offsetHeight > 0 — reliable even for height:0/overflow:hidden collapse
-          // (Amazon Vue SPA may not use display:none for accordion animation).
-          const beforeLabels = await chrome.scripting.executeScript({
-            target: { tabId: bgTab.id },
-            func: () => [...document.querySelectorAll(".full-page-account-switcher-account-details")]
-              .filter(b => b.offsetHeight > 0)
-              .map(b => {
-                const ft = b.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
-                return ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
-              }).filter(Boolean),
-          }).then(([r]) => r?.result || []).catch(() => []);
-
-          await bgAccountClickRow(bgTab.id, label);
-          // Microtask-driven Vue updates work in background tabs; 400ms is generous.
-          await new Promise(r => setTimeout(r, 400));
-
-          const newSubAccounts = await chrome.scripting.executeScript({
-            target: { tabId: bgTab.id },
-            func: (beforeArr) => {
-              const beforeSet = new Set(beforeArr);
-              // Amazon uses .full-page-account-switcher-account-details for BOTH SPN sub-sellers
-              // AND country/marketplace rows. Distinguish by checking if all new entries are
-              // country names — if so, it's a marketplace selector, not an SPN.
-              const COUNTRIES = new Set(["afghanistan","albania","algeria","andorra","angola","argentina","armenia","australia","austria","azerbaijan","bahrain","bangladesh","belarus","belgium","belize","benin","bhutan","bolivia","brazil","brunei","bulgaria","cambodia","cameroon","canada","chile","china","colombia","congo","costa rica","croatia","cuba","cyprus","czech republic","czechia","denmark","ecuador","egypt","el salvador","estonia","ethiopia","finland","france","georgia","germany","ghana","greece","guatemala","hungary","iceland","india","indonesia","iran","iraq","ireland","israel","italy","jamaica","japan","jordan","kazakhstan","kenya","kuwait","latvia","lebanon","liechtenstein","lithuania","luxembourg","malaysia","malta","mauritius","mexico","moldova","monaco","mongolia","montenegro","morocco","nepal","netherlands","new zealand","nicaragua","nigeria","north korea","north macedonia","norway","oman","pakistan","panama","paraguay","peru","philippines","poland","portugal","qatar","romania","russia","saudi arabia","senegal","serbia","singapore","slovakia","slovenia","south africa","south korea","spain","sri lanka","sweden","switzerland","taiwan","tajikistan","tanzania","thailand","tunisia","turkey","ukraine","united arab emirates","united kingdom","united states","uruguay","uzbekistan","venezuela","vietnam","yemen","zambia","zimbabwe"]);
-              const isCountry = lbl => COUNTRIES.has(lbl.replace(/\s*\(pending\s+registration\)/i, "").trim().toLowerCase());
-              const found = [...document.querySelectorAll(".full-page-account-switcher-account-details")]
-                .filter(b => b.offsetHeight > 0)
-                .map(b => {
-                  const ft = b.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "";
-                  const lbl = ft.replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
-                  return lbl && !beforeSet.has(lbl) ? { label: lbl, isCurrent: /\(current\)/i.test(ft) } : null;
-                }).filter(Boolean);
-              if (found.length > 0 && found.every(f => isCountry(f.label))) return [];
-              return found;
-            },
-            args: [beforeLabels],
-          }).then(([r]) => r?.result || []).catch(() => []);
-
-          console.log("[bgScrapeAccounts] click-reveal for", label, "→", newSubAccounts.map(a => a.label).join(", ") || "(none)");
-
-          if (newSubAccounts.length > 0) {
-            if (accounts.has(label)) accounts.get(label).hasChildren = true;
-            for (const sub of newSubAccounts) {
-              if (!accounts.has(sub.label)) {
-                accounts.set(sub.label, { label: sub.label, isCurrent: sub.isCurrent, parent: label, hasChildren: false });
-              } else if (!accounts.get(sub.label).parent) {
-                // Sub-account from flat API (parent: null) — assign parent now.
-                accounts.get(sub.label).parent = label;
-              } else if (accounts.get(sub.label).parent !== label) {
-                // Sub-account already parented to a different SPN (e.g. ExaSoft under both
-                // EXPANDO 5 and EXPANDO global SPN) — add duplicate entry so it appears
-                // under both parents in the UI.
-                const dupKey = `${sub.label}::${label}`;
-                if (!accounts.has(dupKey)) {
-                  accounts.set(dupKey, { label: sub.label, isCurrent: sub.isCurrent, parent: label, hasChildren: false });
-                }
-              }
-            }
-          }
-          await bgAccountClickRow(bgTab.id, label);
-          await new Promise(r => setTimeout(r, 300));
         }
 
         if (accounts.size > 0) break;
@@ -1100,10 +1061,11 @@ async function ibaMultiProcessNext() {
   }
   await chrome.storage.local.set({ [IBA_MULTI_STATE_KEY]: { ...state, tabId } });
 
-  // Navigate to account-switcher
+  // Navigate to account-switcher — register listener BEFORE tabs.update to avoid race condition
   const switcherUrl = "https://sellercentral.amazon.de/account-switcher/default/merchantMarketplace";
+  const switcherLoadPromise = ibaMultiWaitForTabLoad(tabId, 20000);
   await chrome.tabs.update(tabId, { url: switcherUrl });
-  await ibaMultiWaitForTabLoad(tabId, 20000);
+  await switcherLoadPromise;
   await new Promise(r => setTimeout(r, 1500));
 
   // Select the account and always switch to Germany — IBA runs only on DE
@@ -1866,6 +1828,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "STOP_VIOLATIONS_EXPORT") {
+    let tabId = null;
+    for (const [tid, state] of taskStateByTabId.entries()) {
+      if (state.taskType === "violationsExport") { tabId = tid; break; }
+    }
+    if (tabId === null) {
+      sendResponse({ success: false, error: "No violations export running." });
+      return false;
+    }
+    stoppedTabs.add(tabId);
+    clearTask(tabId);
+    sendResponse({ success: true });
+    return false;
+  }
+
   if (message?.type === "GET_IBA_SCHEDULE") {
     (async () => {
       const config = await loadIbaSchedule();
@@ -1915,10 +1892,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!activeTab?.url || !/sellercentral\.amazon\./.test(activeTab.url)) {
-          sendResponse({ success: false, error: "No Seller Central tab active" }); return;
+        let domain;
+        if (activeTab?.url && /sellercentral(?:-europe)?\.amazon\./.test(activeTab.url)) {
+          domain = new URL(activeTab.url).hostname;
+        } else {
+          // Active tab is on SPP or non-SC — find an existing SC tab or fall back to .de
+          let [scTab] = await chrome.tabs.query({ url: "https://sellercentral.amazon.*/*" });
+          if (!scTab) [scTab] = await chrome.tabs.query({ url: "https://sellercentral-europe.amazon.com/*" });
+          domain = scTab?.url ? new URL(scTab.url).hostname : "sellercentral.amazon.de";
         }
-        const domain = new URL(activeTab.url).hostname;
         const { parentId, mkid } = message;
 
         // Check if already loading — popup should just poll storage
@@ -1969,6 +1951,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const { brands, originTabUrl } = message;
     brandScannerOrchestrate(brands, originTabUrl).catch(() => {});
     sendResponse({ started: true });
+    return true;
+  }
+
+  if (message?.type === "OPEN_OPTIONS_PAGE") {
+    chrome.runtime.openOptionsPage();
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -2301,7 +2289,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "GET_VIOLATIONS_STATE") {
     const tabId = sender.tab?.id;
-    const taskState = typeof tabId === "number" ? taskStateByTabId.get(tabId) : null;
+    let taskState = typeof tabId === "number" ? taskStateByTabId.get(tabId) : null;
+    // Popup has no tab — scan for any active violations export
+    if (!taskState || taskState.taskType !== "violationsExport") {
+      for (const s of taskStateByTabId.values()) {
+        if (s.taskType === "violationsExport") { taskState = s; break; }
+      }
+    }
 
     if (!taskState || taskState.taskType !== "violationsExport") {
       sendResponse({ success: false, error: "Violations task state not found." });
@@ -2330,21 +2324,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      taskState.processing = false;
       const newViolations = Array.isArray(message.violations) ? message.violations : [];
       taskState.violations = [...(taskState.violations || []), ...newViolations];
+      console.log(`[Violations] Policy path ${taskState.violationsPolicyPathIndex + 1}: načteno ${newViolations.length} violations (celkem ${taskState.violations.length})`);
 
       const policyPaths = TASK_CONFIG.violationsExport.policyPaths;
       taskState.violationsPolicyPathIndex = (taskState.violationsPolicyPathIndex || 0) + 1;
 
       if (taskState.violationsPolicyPathIndex < policyPaths.length) {
         const nextPath = policyPaths[taskState.violationsPolicyPathIndex];
+        console.log(`[Violations] Přechod na další policy path: ${nextPath}`);
         await chrome.tabs.update(tabId, { url: `${taskState.origin}${nextPath}` });
         return;
       }
 
       taskState.uniqueAsins = [...new Set(taskState.violations.map((item) => item.asin).filter(Boolean))];
+      console.log(`[Violations] ✅ Policy collection hotova — ${taskState.violations.length} violations, ${taskState.uniqueAsins.length} unikátních ASINů`);
+      console.log(`[Violations] ASINy:`, taskState.uniqueAsins);
 
       if (taskState.uniqueAsins.length === 0) {
+        console.log(`[Violations] Žádné ASINy — konec.`);
         if ((taskState.violationsMarketQueue || []).length > 0) {
           violationsSaveCurrentMarket(taskState);
           await violationsAdvanceMarket(tabId, taskState);
@@ -2354,6 +2354,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      console.log(`[Violations] Zahajuji kontrolu objednávek (${taskState.uniqueAsins.length} ASINů)...`);
       taskState.violationStage = "collectOrders";
       taskState.asinIndex = 0;
       await chrome.tabs.update(tabId, { url: getOrderSearchUrl(taskState.origin, taskState.uniqueAsins[0]) });
@@ -2369,16 +2370,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      taskState.processing = false;
       taskState.asinOrderCount[message.asin] = message.orderCount ?? "N/A";
       taskState.asinIndex += 1;
+      const total = taskState.uniqueAsins.length;
+      console.log(`[Violations] Objednávky ${taskState.asinIndex}/${total}: ${message.asin} → ${message.orderCount ?? "N/A"} objednávek`);
 
-      if (taskState.asinIndex < taskState.uniqueAsins.length) {
+      if (taskState.asinIndex < total) {
         await chrome.tabs.update(tabId, {
           url: getOrderSearchUrl(taskState.origin, taskState.uniqueAsins[taskState.asinIndex])
         });
         return;
       }
 
+      console.log(`[Violations] ✅ Objednávky hotovy (${total}/${total}) — zahajuji kontrolu inventory...`);
       taskState.violationStage = "collectInventory";
       taskState.asinIndex = 0;
       await chrome.tabs.update(tabId, {
@@ -2396,16 +2401,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      taskState.processing = false;
       taskState.asinSkuMap[message.asin] = message.sku ?? "N/A";
       taskState.asinIndex += 1;
+      const invTotal = taskState.uniqueAsins.length;
+      console.log(`[Violations] Inventory ${taskState.asinIndex}/${invTotal}: ${message.asin} → SKU: ${message.sku ?? "N/A"}`);
 
-      if (taskState.asinIndex < taskState.uniqueAsins.length) {
+      if (taskState.asinIndex < invTotal) {
         await chrome.tabs.update(tabId, {
           url: getInventoryUrl(taskState.origin, taskState.uniqueAsins[taskState.asinIndex])
         });
         return;
       }
 
+      console.log(`[Violations] ✅ Inventory hotovo (${invTotal}/${invTotal})`);
+      console.log(`[Violations] Generuji výstupní soubory pro ${invTotal} ASINů...`);
       if ((taskState.violationsMarketQueue || []).length > 0) {
         violationsSaveCurrentMarket(taskState);
         await violationsAdvanceMarket(tabId, taskState);
@@ -2697,8 +2707,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "INVOICE_DOWNLOADER_START") {
     (async () => {
       try {
-        const { months, years, docType = "all", downloadMode = "zip" } = message;
-        const params = { months, years, docType, downloadMode };
+        const { months, years, docType = "all", downloadMode = "zip", includeCsv = false } = message;
+        const params = { months, years, docType, downloadMode, includeCsv };
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         console.log("[BG] INVOICE_DOWNLOADER_START tab:", tab?.id, tab?.url);
         if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
@@ -3677,10 +3687,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       return;
     }
 
+    if (taskState.processing) return;
+    taskState.processing = true;
     try {
       await runViolationsScript(tabId);
     } catch (error) {
       console.error("Failed to inject violations.js", error);
+      taskState.processing = false;
       clearTask(tabId);
     }
 
@@ -4869,24 +4882,35 @@ async function sppOpenAddToClientModal(tabId, actorId) {
     func: (id) => {
       for (const row of document.querySelectorAll('kat-table-row[data-test="user"]')) {
         if (!(row.querySelector('.user-column a')?.getAttribute('href') || '').includes(id)) continue;
-        const btn = row.querySelector('kat-dropdown-button')
-          ?.shadowRoot?.querySelector('button[data-action="add_to_client"]');
-        if (!btn) return { error: "add_to_client not found in shadow DOM" };
-        if (btn.disabled) return { error: "add_to_client is disabled" };
+        const shadow = row.querySelector('kat-dropdown-button')?.shadowRoot;
+        if (!shadow) return { error: "kat-dropdown-button shadow not found" };
+        // Amazon renamed "Add to client" → "Update Client Access"; try both data-action values,
+        // then fall back to button text content.
+        const btn = shadow.querySelector('button[data-action="update_client_access"]')
+          || shadow.querySelector('button[data-action="add_to_client"]')
+          || [...shadow.querySelectorAll('button')].find(b =>
+              /update.client.access|add.to.client/i.test(b.textContent));
+        if (!btn) return { error: "update_client_access / add_to_client button not found in shadow DOM" };
+        if (btn.disabled) return { error: "button is disabled" };
         btn.click();
         return { ok: true };
       }
-      return { error: "Row not found for add_to_client click" };
+      return { error: "Row not found for update_client_access click" };
     },
     args: [actorId],
   });
   if (addRes?.result?.error) throw new Error(addRes.result.error);
 
-  // Wait for modal
-  const modalOk = await sppPollInTab(tabId, () =>
-    !!document.querySelector('kat-modal kat-tab[data-qa="add-client"]')
-  , 300, 8000);
-  if (!modalOk) throw new Error("Add-to-client modal did not appear");
+  // Wait for modal — new UI is flat (no tabs), old UI had kat-tab[data-qa="add-client"].
+  // Accept either: tab-based old modal, OR new flat modal with kat-checkbox list visible.
+  const modalOk = await sppPollInTab(tabId, () => {
+    const modal = document.querySelector('kat-modal');
+    if (!modal) return false;
+    return !!modal.querySelector('kat-tab[data-qa="add-client"], kat-tab[data-qa="update-client"]')
+      || !!modal.querySelector('kat-checkbox')
+      || !!modal.querySelector('kat-input');
+  }, 300, 8000);
+  if (!modalOk) throw new Error("Update-client-access modal did not appear");
   await new Promise(r => setTimeout(r, 400));
 }
 
@@ -4996,13 +5020,13 @@ async function sppAssignOne(tabId, employee, clients) {
   const targetNames = new Set(clients.map(c => c.name.trim().toLowerCase()));
   let anyChecked = false;
 
-  // Ensure "Add Client" tab is active
+  // Activate "Add Client" tab if present (old modal has tabs; new flat modal has none).
   await chrome.scripting.executeScript({
     target: { tabId }, world: "MAIN",
     func: async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       const modal = document.querySelector('kat-modal');
-      const addTab = modal?.querySelector('kat-tab[data-qa="add-client"]');
+      const addTab = modal?.querySelector('kat-tab[data-qa="add-client"], kat-tab[data-qa="update-client"]');
       const addTabBtn = addTab?.shadowRoot?.querySelector('[role="tab"]');
       if (addTabBtn) { addTabBtn.click(); await sleep(400); }
     },
@@ -5018,35 +5042,38 @@ async function sppAssignOne(tabId, employee, clients) {
         const modal = document.querySelector('kat-modal');
         if (!modal) return { error: 'Modal not found' };
 
-        const tabContent = modal.querySelector('[data-qa="add-client"]');
-        if (!tabContent) return { error: 'no add-client tab' };
+        // New modal is flat (no tabs); old modal scoped content to [data-qa="add-client"] tab.
+        const tabContent = modal.querySelector('[data-qa="add-client"], [data-qa="update-client"]') || modal;
 
-        // Type client name into search box (kat-input shadow DOM)
-        const searchKatInput = tabContent.querySelector('kat-input.search-input');
+        // Type client name into search box.
+        // Try specific class first, then any kat-input, then plain input[placeholder].
+        const searchKatInput = tabContent.querySelector('kat-input.search-input')
+          || tabContent.querySelector('kat-input');
         const searchInput = searchKatInput?.shadowRoot?.querySelector('input[part="input"]')
-          || searchKatInput?.shadowRoot?.querySelector('input');
+          || searchKatInput?.shadowRoot?.querySelector('input')
+          || tabContent.querySelector('input[placeholder]');
         if (!searchInput) {
-          // No search input means all clients are already assigned — not an error
-          return { ok: true, skipped: true, reason: 'already assigned to all clients' };
+          return { ok: true, skipped: true, reason: 'no search input — possibly all clients already assigned' };
         }
 
         searchInput.focus();
-        // Clear existing value first
-        searchInput.select();
         document.execCommand('selectAll', false);
         document.execCommand('delete', false);
-        // Simulate real typing — execCommand triggers all browser input events kat-input listens to
         document.execCommand('insertText', false, name);
+        // Also dispatch native events so Vue/Katal re-filter the list
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        searchInput.dispatchEvent(new Event('change', { bubbles: true }));
         await sleep(900); // Wait for live search to filter
 
-        // Find the matching kat-checkbox
-        let clientsList = tabContent.querySelector('.clients-list');
-        let katCheckboxes = clientsList ? [...clientsList.querySelectorAll('kat-checkbox')] : [];
+        // Find the matching kat-checkbox.
+        // New modal: checkboxes are direct children of modal body, not scoped to .clients-list.
+        let clientsList = tabContent.querySelector('.clients-list') || tabContent;
+        let katCheckboxes = [...clientsList.querySelectorAll('kat-checkbox')];
         // Wait up to 1.5s more if list not yet rendered
         for (let w = 0; w < 8 && !katCheckboxes.length; w++) {
           await sleep(200);
-          clientsList = tabContent.querySelector('.clients-list');
-          katCheckboxes = clientsList ? [...clientsList.querySelectorAll('kat-checkbox')] : [];
+          clientsList = tabContent.querySelector('.clients-list') || tabContent;
+          katCheckboxes = [...clientsList.querySelectorAll('kat-checkbox')];
         }
 
         for (const katCb of katCheckboxes) {
@@ -5101,7 +5128,11 @@ async function sppAssignOne(tabId, employee, clients) {
         else modal.querySelector('[part="close-button"], button[aria-label*="close" i]')?.click();
       };
 
-      const saveBtn = modal.querySelector('kat-button[data-qa="add-client-save"]');
+      // Try old data-qa first, then new data-qa, then fall back to button label text.
+      const saveBtn = modal.querySelector('kat-button[data-qa="add-client-save"]')
+        || modal.querySelector('kat-button[data-qa="save-changes"]')
+        || [...modal.querySelectorAll('kat-button')].find(b =>
+            /save.changes|save/i.test(b.getAttribute('label') || b.textContent));
       if (!saveBtn) { closeModal(); return { ok: true, skipped: true }; }
 
       const saveBtnInner = saveBtn.shadowRoot?.querySelector('button');

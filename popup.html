@@ -1328,8 +1328,10 @@
             <label class="inv-select-all-row"><input type="checkbox" id="violationsMarketSelectAll"> All markets</label>
           </div>
         </div>
-        <button id="violationsButton" class="secondary-button" type="button" data-i18n="btnExport">Export</button>
-        <button id="violationsStopButton" class="danger-button" type="button" data-i18n="btnStop">Stop</button>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+          <button id="violationsButton" class="primary-button" type="button" style="flex:1;">⬇ Export</button>
+          <button id="violationsStopButton" type="button" style="display:none;height:36px;padding:0 12px;border-radius:8px;background:#FEE2E2;color:#DC2626;font-size:12px;font-weight:500;white-space:nowrap;">■ Stop</button>
+        </div>
       </div>
     </article>
 
@@ -1399,6 +1401,64 @@
             </thead>
             <tbody id="brandScannerTableBody"></tbody>
           </table>
+        </div>
+      </div>
+    </article>
+
+    <!-- ── Account Selector ──────────────────────────────────────────────────── -->
+    <article class="tool-card">
+      <button id="accountSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label">Account Selector</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="accountSectionBody" class="tool-card-body" hidden>
+        <p id="accountCurrentLabel" class="tool-status">Current: —</p>
+        <div id="accountSwitchingIndicator" class="acct-switching" style="display:none;">
+          <div class="vat-spinner" style="flex-shrink:0;width:14px;height:14px;"></div>
+          <span id="accountSwitchingText">Přepínám…</span>
+        </div>
+        <div id="accountSelectorTree" class="acct-tree" style="margin-top:8px;"></div>
+        <div class="tool-input-row" style="margin-top:8px;">
+          <button id="accountRefreshButton" class="secondary-button" type="button">&#8635; Refresh</button>
+        </div>
+      </div>
+    </article>
+
+    <!-- ── IBA Shipment ───────────────────────────────────────────────────────── -->
+    <article class="tool-card">
+      <button id="ibaSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
+        <span class="tool-card-toggle-main">
+          <span class="tool-card-toggle-label" data-i18n="sectionIba">IBA Shipment</span>
+        </span>
+        <span class="tool-card-toggle-arrow">&#9662;</span>
+      </button>
+      <div id="ibaSectionBody" class="tool-card-body" hidden>
+        <button id="ibaAutomationButton" class="primary-button" type="button" data-i18n="btnRunNow">Run now</button>
+
+        <div style="margin-top:10px;border-top:1px solid #E5E7EB;padding-top:10px;">
+          <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">Spustit pro uložené klienty</div>
+
+          <!-- Saved client chips -->
+          <div id="ibaClientList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
+
+          <!-- Add client row -->
+          <div style="display:flex;gap:4px;align-items:center;">
+            <select id="ibaAddClientSelect" style="flex:1;font-size:12px;padding:5px 6px;border:1px solid #D1D5DB;border-radius:6px;color:#374151;background:#fff;min-width:0;">
+              <option value="">— vyberte klienta —</option>
+            </select>
+            <button id="ibaAddClientButton" type="button" style="flex-shrink:0;padding:5px 10px;font-size:13px;font-weight:700;background:#2563EB;color:#fff;border:none;border-radius:6px;cursor:pointer;">+</button>
+          </div>
+          <div id="ibaClientListHint" style="font-size:11px;color:#9CA3AF;margin-top:4px;"></div>
+
+          <!-- Run / Stop -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+            <button id="ibaMultiRunButton" class="primary-button" type="button" style="flex:1;">&#9654; Spustit pro všechny</button>
+            <button id="ibaMultiStopButton" class="danger-button" type="button" style="display:none;">Stop</button>
+          </div>
+
+          <div id="ibaMultiProgress" style="display:none;margin-top:8px;font-size:12px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px;padding:8px;"></div>
         </div>
       </div>
     </article>
@@ -1647,6 +1707,11 @@
           </label>
         </div>
 
+        <label style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:12px;font-weight:500;cursor:pointer;">
+          <input type="checkbox" id="invoiceIncludeCsv" style="accent-color:#3B82F6;width:13px;height:13px;">
+          Include CSV files
+        </label>
+
         <div id="invoiceStatus" style="display:none;margin-top:10px;align-items:center;gap:8px;">
           <div class="vat-spinner"></div>
           <div id="invoiceStatusLabel" style="font-size:12px;color:#6B7280;font-weight:500;"></div>
@@ -1822,27 +1887,6 @@
       <div class="section-group-body collapsed" id="inProgressSectionBody">
         <div class="section-group-inner">
 
-    <!-- ── Account Selector ──────────────────────────────────────────────────── -->
-    <article class="tool-card">
-      <button id="accountSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
-        <span class="tool-card-toggle-main">
-          <span class="tool-card-toggle-label">Account Selector</span>
-        </span>
-        <span class="tool-card-toggle-arrow">&#9662;</span>
-      </button>
-      <div id="accountSectionBody" class="tool-card-body" hidden>
-        <p id="accountCurrentLabel" class="tool-status">Current: —</p>
-        <div id="accountSwitchingIndicator" class="acct-switching" style="display:none;">
-          <div class="vat-spinner" style="flex-shrink:0;width:14px;height:14px;"></div>
-          <span id="accountSwitchingText">Přepínám…</span>
-        </div>
-        <div id="accountSelectorTree" class="acct-tree" style="margin-top:8px;"></div>
-        <div class="tool-input-row" style="margin-top:8px;">
-          <button id="accountRefreshButton" class="secondary-button" type="button">&#8635; Refresh</button>
-        </div>
-      </div>
-    </article>
-
     <!-- ── Market Selector ───────────────────────────────────────────────────── -->
     <article class="tool-card">
       <button id="marketSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
@@ -1936,51 +1980,6 @@
 
         <button id="draftScrapingNoRetoolButton" class="primary-button" type="button" style="margin-top:6px;" data-i18n="btnRun">▶ Run</button>
         <button id="draftStopButton" class="danger-button" type="button" data-i18n="btnStop">Stop</button>
-      </div>
-    </article>
-
-    <!-- ── IBA Shipment ───────────────────────────────────────────────────────── -->
-    <article class="tool-card">
-      <button id="ibaSectionToggle" class="tool-card-toggle" type="button" aria-expanded="false">
-        <span class="tool-card-toggle-main">
-          <span class="tool-card-toggle-label" data-i18n="sectionIba">IBA Shipment</span>
-        </span>
-        <span class="tool-card-toggle-arrow">&#9662;</span>
-      </button>
-      <div id="ibaSectionBody" class="tool-card-body" hidden>
-        <p class="tool-card-description" data-i18n="descDailySchedule">Daily schedule</p>
-        <button id="ibaAutomationButton" class="primary-button" type="button" data-i18n="btnRunNow">Run now</button>
-        <div class="tool-input-row">
-          <input id="ibaScheduleTimeInput" class="tool-input" type="time" value="17:00">
-          <button id="ibaScheduleSaveButton" class="secondary-button" type="button" data-i18n="btnSave">Save</button>
-        </div>
-        <div class="tool-status">Status <span id="ibaScheduleStatus" aria-live="polite" data-i18n="statusDisabled">Disabled</span></div>
-        <button id="ibaScheduleDisableButton" class="secondary-button" type="button" data-i18n="btnDisable">Disable</button>
-        <button id="ibaStopButton" class="danger-button" type="button" data-i18n="btnStop">Stop</button>
-
-        <div style="margin-top:14px;border-top:1px solid #E5E7EB;padding-top:12px;">
-          <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">Spustit pro uložené klienty</div>
-
-          <!-- Saved client chips -->
-          <div id="ibaClientList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
-
-          <!-- Add client row -->
-          <div style="display:flex;gap:4px;align-items:center;">
-            <select id="ibaAddClientSelect" style="flex:1;font-size:12px;padding:5px 6px;border:1px solid #D1D5DB;border-radius:6px;color:#374151;background:#fff;min-width:0;">
-              <option value="">— vyberte klienta —</option>
-            </select>
-            <button id="ibaAddClientButton" type="button" style="flex-shrink:0;padding:5px 10px;font-size:13px;font-weight:700;background:#2563EB;color:#fff;border:none;border-radius:6px;cursor:pointer;">+</button>
-          </div>
-          <div id="ibaClientListHint" style="font-size:11px;color:#9CA3AF;margin-top:4px;"></div>
-
-          <!-- Run / Stop -->
-          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;">
-            <button id="ibaMultiRunButton" class="primary-button" type="button" style="flex:1;">&#9654; Spustit pro všechny</button>
-            <button id="ibaMultiStopButton" class="danger-button" type="button" style="display:none;">Stop</button>
-          </div>
-
-          <div id="ibaMultiProgress" style="display:none;margin-top:8px;font-size:12px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px;padding:8px;"></div>
-        </div>
       </div>
     </article>
 
@@ -2311,6 +2310,18 @@
 
     <div id="status" aria-live="polite"></div>
     </div>
+
+    <div style="padding:8px 4px 2px;text-align:right;border-top:1px solid var(--sc-border,#f0f0f0);margin-top:4px;">
+      <button id="openOptionsBtn2" type="button"
+        style="background:none;border:none;font-family:inherit;font-size:12px;color:var(--sc-muted,#999);
+               cursor:pointer;padding:4px 2px;display:inline-flex;align-items:center;gap:4px;">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        Settings
+      </button>
+    </div>
+
   </section>
 
   <section id="bookmarksView" class="popup-view sc-bookmarks-panel" aria-label="SC Bookmarks">

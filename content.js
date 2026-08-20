@@ -253,7 +253,11 @@
 
   async function marketFetchJson(path) {
     const response = await fetch(path, {
-      credentials: "include"
+      credentials: "include",
+      headers: {
+        "Accept": "application/json",
+        "x-requested-with": "XMLHttpRequest",
+      },
     });
 
     if (!response.ok) {
@@ -1799,8 +1803,9 @@
     ibaLog(`Collected ${orderIds.length} IBA orders.`);
 
     if (orderIds.length === 0) {
-      chrome.runtime.sendMessage({ type: "IBA_DONE", result: "no_orders" }).catch(() => {});
       const multiMode = await new Promise(r => chrome.storage.local.get("_ibaMultiClientMode", d => r(d._ibaMultiClientMode)));
+      chrome.runtime.sendMessage({ type: "IBA_DONE", result: "no_orders" }).catch(() => {});
+      chrome.storage.local.remove("_ibaSessionActive");
       if (!multiMode) alert("No unshipped IBA orders found.");
       return;
     }
@@ -2294,10 +2299,13 @@
       return;
     }
 
-    chrome.runtime.sendMessage({ type: "IBA_DONE", result: "complete" }).catch(() => {});
     const multiMode = await new Promise(r => chrome.storage.local.get("_ibaMultiClientMode", d => r(d._ibaMultiClientMode)));
-    if (!multiMode) alert("IBA shipment automation complete.");
-    ibaNavigate(ibaAmazonListUrl);
+    chrome.runtime.sendMessage({ type: "IBA_DONE", result: "complete" }).catch(() => {});
+    chrome.storage.local.remove("_ibaSessionActive");
+    if (!multiMode) {
+      alert("IBA shipment automation complete.");
+      ibaNavigate(ibaAmazonListUrl);
+    }
   }
 
   async function ibaRunCurrentPhase() {
@@ -2319,6 +2327,20 @@
     const phase = ibaGetPhase();
 
     if (!phase) {
+      return;
+    }
+
+    // Guard: only run if IBA was explicitly started by button (sets _ibaSessionActive)
+    // or by multi-client automation (sets _ibaMultiClientMode).
+    // Prevents accidental auto-start when user navigates to a URL with IBA params from history/bookmarks.
+    const sessionStore = await new Promise(r =>
+      chrome.storage.local.get(["_ibaSessionActive", "_ibaMultiClientMode"], r)
+    );
+    const session = sessionStore._ibaSessionActive;
+    const multiMode = sessionStore._ibaMultiClientMode;
+    const sessionValid = session && (Date.now() - (session.ts || 0) < 3600000); // 1h TTL
+    if (!sessionValid && !multiMode) {
+      ibaLog("Phase detected but no active session — start IBA via button. Skipping.");
       return;
     }
 
@@ -2706,11 +2728,11 @@
     console.log("[SellerTools] accountSelectRun: seller=%s market=%s", sellerName, marketLabel);
 
     function findAccountBtn(label) {
-      return [...document.querySelectorAll("button.full-page-account-switcher-account-details")]
+      return [...document.querySelectorAll(".full-page-account-switcher-account-details")]
         .find((btn) => {
-          const text = btn.querySelector("span.full-page-account-switcher-account-label")
-            ?.textContent?.trim() || "";
-          return text === label || text.startsWith(label + " ") || text.startsWith(label + " ");
+          const text = (btn.querySelector(".full-page-account-switcher-account-label")
+            ?.textContent?.trim() || "").replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+          return text === label || text.startsWith(label + " ");
         });
     }
 
@@ -2738,14 +2760,30 @@
       console.log("[SellerTools] accountSelectRun: typed seller name, search btn clicked:", !!searchBtn);
     }
 
-    // Step 2: poll for seller row (up to 6s)
+    // Step 2: poll for seller row (up to 8s).
+    // If not found after 1.5s, click any visible collapsed parents to expand them —
+    // Amazon may show only the collapsed SPN parent without inserting sub-clients into DOM.
     const sellerBtn = sellerName ? await new Promise((resolve) => {
-      const deadline = Date.now() + 6000;
+      const deadline = Date.now() + 8000;
+      const clickedParents = new Set();
+      const startTs = Date.now();
       const tick = () => {
         const btn = findAccountBtn(sellerName);
         if (btn) { resolve(btn); return; }
         if (Date.now() > deadline) { resolve(null); return; }
-        setTimeout(tick, 250);
+        if (Date.now() - startTs > 600) {
+          [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+            .filter(b => {
+              if (!b.offsetHeight || clickedParents.has(b)) return false;
+              // Skip the target seller — we'll click it explicitly after find; clicking it
+              // here would toggle it and the explicit click would then collapse it.
+              const txt = (b.querySelector(".full-page-account-switcher-account-label")
+                ?.textContent?.trim() || "").replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+              return txt !== sellerName && !txt.startsWith(sellerName + " ");
+            })
+            .forEach(b => { clickedParents.add(b); b.click(); });
+        }
+        setTimeout(tick, 150);
       };
       tick();
     }) : null;
@@ -2758,26 +2796,140 @@
       return { success: false, error: `Seller "${sellerName}" not found` };
     }
 
-    sellerBtn.click();
-    await new Promise((r) => setTimeout(r, 1500));
-
-    // Step 3: click market row if specified
-    if (marketLabel) {
-      const marketBtn = findAccountBtn(marketLabel);
-      if (marketBtn) {
-        console.log("[SellerTools] accountSelectRun: clicking market:", marketLabel);
-        marketBtn.click();
-        await new Promise((r) => setTimeout(r, 500));
-      } else {
-        console.log("[SellerTools] accountSelectRun: market row not found for:", marketLabel);
+    // If seller is hidden inside a collapsed SPN, expand the parent row first.
+    // Use class selector without tag — SPN rows can be div, not button.
+    if (sellerBtn.offsetHeight === 0) {
+      const parentRow = [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+        .find(b => b !== sellerBtn && b.offsetHeight > 0);
+      if (parentRow) {
+        console.log("[SellerTools] accountSelectRun: expanding parent:", parentRow.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim());
+        parentRow.click();
+        await new Promise(resolve => {
+          const deadline = Date.now() + 3000;
+          const tick = () => {
+            if (sellerBtn.offsetHeight > 0 || Date.now() > deadline) resolve();
+            else setTimeout(tick, 150);
+          };
+          tick();
+        });
+        console.log("[SellerTools] accountSelectRun: seller visible after expand:", sellerBtn.offsetHeight > 0);
       }
     }
 
-    // Step 4: confirm
-    const confirmBtn = document.querySelector("kat-button[data-test='confirm-selection']");
-    if (confirmBtn) {
+    const getMarketLabel = b => (b.querySelector(".full-page-account-switcher-account-label")
+      ?.textContent?.trim() || "").replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
+
+    // Amazon pre-expands the target seller when the account-switcher page loads from a market-switch URL.
+    // If the target market row is already visible, clicking sellerBtn would toggle it off and hide the rows.
+    const marketAlreadyVisible = marketLabel
+      ? !![...document.querySelectorAll(".full-page-account-switcher-account-details")]
+          .find(b => b !== sellerBtn && b.offsetHeight > 0 &&
+            (getMarketLabel(b) === marketLabel || getMarketLabel(b).startsWith(marketLabel + " ")))
+      : false;
+
+    // Snapshot visible rows BEFORE clicking seller — pre-existing agency-level rows must be excluded.
+    const beforeSet = new Set(
+      [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+        .filter(b => b.offsetHeight > 0)
+    );
+
+    if (marketAlreadyVisible) {
+      console.log("[SellerTools] accountSelectRun: target market pre-visible, skipping sellerBtn click");
+    } else {
+      sellerBtn.click();
+      console.log("[SellerTools] accountSelectRun: seller clicked");
+
+      // Vue processes the click and may collapse the parent SPN as a side effect.
+      // Wait 200ms, then if seller is hidden (SPN collapsed), re-expand the SPN —
+      // seller stays in expanded state (▼) with its markets still in DOM.
+      await new Promise(r => setTimeout(r, 200));
+      if (sellerBtn.offsetHeight === 0) {
+        const spnBtn = [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+          .find(b => b !== sellerBtn && b.offsetHeight > 0);
+        if (spnBtn) {
+          console.log("[SellerTools] accountSelectRun: SPN collapsed — re-expanding:", spnBtn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim());
+          spnBtn.click();
+          await new Promise(r => setTimeout(r, 300));
+          // SPN is now re-expanded; sellerBtn is visible but its country rows are collapsed.
+          // Refresh beforeSet and re-click seller to expand countries.
+          if (sellerBtn.offsetHeight > 0) {
+            beforeSet.clear();
+            [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+              .filter(b => b.offsetHeight > 0)
+              .forEach(b => beforeSet.add(b));
+            sellerBtn.click();
+            await new Promise(r => setTimeout(r, 300));
+            console.log("[SellerTools] accountSelectRun: re-clicked seller after SPN re-expand");
+          }
+        }
+      }
+    }
+
+    // Step 3: poll for NEW market rows (up to 5s).
+    // Pre-existing rows (agency-level countries) are excluded via beforeSet snapshot.
+    // As soon as non-pending markets appear, pick preferred (domain-derived) immediately.
+    const tld = window.location.hostname.replace(/^[^.]+\.amazon\./, "");
+    const TLD_TO_MARKET = {
+      "de": "Germany", "co.uk": "United Kingdom", "fr": "France",
+      "it": "Italy", "es": "Spain", "pl": "Poland", "nl": "Netherlands",
+      "be": "Belgium", "se": "Sweden", "com.tr": "Turkey",
+      "com": "United States", "co.jp": "Japan", "com.au": "Australia",
+      "ae": "United Arab Emirates", "sa": "Saudi Arabia",
+    };
+    const preferredMarket = TLD_TO_MARKET[tld] || "Germany";
+    // getMarketLabel defined above
+
+    const marketBtn = await new Promise(resolve => {
+      const deadline = Date.now() + 5000;
+      const tick = () => {
+        // When marketLabel is set, search ALL visible rows — the target may be pre-existing in
+        // beforeSet (Amazon pre-expanded) or newly appeared after sellerBtn click.
+        const all = [...document.querySelectorAll(".full-page-account-switcher-account-details")]
+          .filter(b => b !== sellerBtn && b.offsetHeight > 0 && (marketLabel || !beforeSet.has(b)));
+        if (marketLabel) {
+          const target = all.find(b => {
+            const txt = getMarketLabel(b);
+            return txt === marketLabel || txt.startsWith(marketLabel + " ");
+          });
+          if (target || Date.now() > deadline) { resolve(target || null); return; }
+        } else {
+          // 1. Prefer (current) marker — already selected market
+          const current = all.find(b =>
+            /\(current\)|\(selected\)/i.test(b.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim() || "")
+          );
+          if (current) { resolve(current); return; }
+          // 2. As soon as non-pending markets appear, pick preferred immediately (no 5s wait)
+          const nonPending = all.filter(b => !/pending/i.test(getMarketLabel(b)) && getMarketLabel(b));
+          if (nonPending.length > 0) {
+            const pick = nonPending.find(b => getMarketLabel(b) === preferredMarket) || nonPending[0];
+            console.log("[SellerTools] accountSelectRun: markets ready, preferred=%s, picked=%s", preferredMarket, getMarketLabel(pick));
+            resolve(pick);
+            return;
+          }
+          if (Date.now() > deadline) { resolve(null); return; }
+        }
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
+
+    if (marketBtn) {
+      console.log("[SellerTools] accountSelectRun: clicking market:", marketBtn.querySelector(".full-page-account-switcher-account-label")?.textContent?.trim());
+      marketBtn.click();
+      await new Promise(r => setTimeout(r, 200));
+    } else if (marketLabel) {
+      console.log("[SellerTools] accountSelectRun: market not found:", marketLabel);
+    } else {
+      // No market rows appeared — standalone account, confirm should be active
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    // Step 4: confirm via shadow root (more reliable than host element click on kat-button)
+    const confirmHost = document.querySelector("kat-button[data-test='confirm-selection']");
+    if (confirmHost) {
       console.log("[SellerTools] accountSelectRun: clicking confirm");
-      confirmBtn.click();
+      const shadowBtn = confirmHost.shadowRoot?.querySelector("button");
+      (shadowBtn || confirmHost).click();
       return { success: true };
     }
     return { success: false, error: "Confirm button not found" };
@@ -2919,6 +3071,7 @@
     }
 
     if (message?.action === "IBA_START") {
+      chrome.storage.local.set({ _ibaSessionActive: { ts: Date.now() } });
       ibaNavigate(ibaAmazonStartUrl);
       return;
     }
@@ -3215,8 +3368,8 @@
   if (window.location.href.includes("/account-switcher/")) {
     (async () => {
       try {
-        console.log("[SellerTools] account-switcher: content script active, waiting 1.5s for Vue…");
-        await new Promise((r) => setTimeout(r, 1500));
+        console.log("[SellerTools] account-switcher: content script active, waiting 300ms for Vue…");
+        await new Promise((r) => setTimeout(r, 300));
         const { _pendingAccountSwitch: pending } = await chrome.storage.local.get("_pendingAccountSwitch");
         console.log("[SellerTools] account-switcher: _pendingAccountSwitch =", JSON.stringify(pending));
         if (!pending) { console.log("[SellerTools] account-switcher: no pending switch, stopping"); return; }
@@ -3243,8 +3396,302 @@
     }
   }
 
+  // ── Quick Market Switcher ─────────────────────────────────────────────────
+  // Shift+S → centered overlay with market list for fast switching
+  function initQuickMarketSwitcher() {
+    const COUNTRY_FLAGS = {
+      "germany": "🇩🇪", "france": "🇫🇷", "italy": "🇮🇹", "spain": "🇪🇸",
+      "united kingdom": "🇬🇧", "uk": "🇬🇧", "netherlands": "🇳🇱", "poland": "🇵🇱",
+      "sweden": "🇸🇪", "belgium": "🇧🇪", "ireland": "🇮🇪", "turkey": "🇹🇷",
+      "czechia": "🇨🇿", "czech republic": "🇨🇿", "austria": "🇦🇹",
+      "united states": "🇺🇸", "usa": "🇺🇸", "canada": "🇨🇦", "mexico": "🇲🇽",
+      "japan": "🇯🇵", "australia": "🇦🇺", "singapore": "🇸🇬", "india": "🇮🇳",
+      "uae": "🇦🇪", "united arab emirates": "🇦🇪", "saudi arabia": "🇸🇦", "egypt": "🇪🇬",
+    };
+
+    function getFlag(label) {
+      return COUNTRY_FLAGS[(label || "").toLowerCase()] || "🌐";
+    }
+
+    function buildSwitchUrl(market) {
+      const url = new URL(window.location.origin + "/home");
+      url.searchParams.set("mons_sel_mkid", market.ids.mons_sel_mkid || "");
+      url.searchParams.set("mons_sel_dir_mcid", market.ids.mons_sel_dir_mcid || "");
+      if (market.globalAccountId) url.searchParams.set("mons_sel_dir_paid", market.globalAccountId);
+      url.searchParams.set("ignore_selection_changed", "true");
+      return url.toString();
+    }
+
+    let overlayEl = null;
+    let focusedIdx = -1;
+
+    function closeOverlay() {
+      if (overlayEl) { overlayEl.remove(); overlayEl = null; }
+    }
+
+    function getVisibleItems() {
+      return overlayEl ? [...overlayEl.querySelectorAll("[data-qms-item]:not([style*='none'])")]  : [];
+    }
+
+    function updateFocus(items) {
+      items.forEach((item, i) => {
+        item.style.background = i === focusedIdx ? "#dbeafe" : "";
+      });
+      if (items[focusedIdx]) items[focusedIdx].scrollIntoView({ block: "nearest" });
+    }
+
+    async function openOverlay() {
+      if (overlayEl) { closeOverlay(); return; }
+
+      overlayEl = document.createElement("div");
+      overlayEl.id = "__qms_overlay__";
+      Object.assign(overlayEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647",
+        background: "rgba(0,0,0,0.5)", display: "flex",
+        alignItems: "center", justifyContent: "center",
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      });
+
+      const box = document.createElement("div");
+      Object.assign(box.style, {
+        background: "#fff", borderRadius: "12px",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+        width: "360px", maxHeight: "520px",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      });
+
+      const header = document.createElement("div");
+      Object.assign(header.style, {
+        padding: "16px", borderBottom: "1px solid #e5e7eb", flexShrink: "0",
+      });
+      const title = document.createElement("div");
+      title.textContent = "Switch Market";
+      Object.assign(title.style, {
+        fontSize: "15px", fontWeight: "700", color: "#111827", marginBottom: "10px",
+      });
+      const searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.placeholder = "Search country…";
+      Object.assign(searchInput.style, {
+        width: "100%", boxSizing: "border-box",
+        padding: "8px 12px", border: "1px solid #d1d5db",
+        borderRadius: "8px", fontSize: "14px", outline: "none", color: "#111827",
+      });
+      header.appendChild(title);
+      header.appendChild(searchInput);
+
+      const listEl = document.createElement("div");
+      Object.assign(listEl.style, { flex: "1", overflowY: "auto" });
+
+      const loadingEl = document.createElement("div");
+      loadingEl.textContent = "Loading markets…";
+      Object.assign(loadingEl.style, {
+        padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px",
+      });
+      listEl.appendChild(loadingEl);
+
+      const footer = document.createElement("div");
+      Object.assign(footer.style, {
+        padding: "8px 16px", fontSize: "11px", color: "#9ca3af",
+        borderTop: "1px solid #e5e7eb", textAlign: "center", flexShrink: "0",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: "4px",
+      });
+      footer.appendChild(document.createTextNode("↑↓ Navigate · Enter Select · Esc Close · "));
+      const settingsLink = document.createElement("span");
+      settingsLink.textContent = "⚙ Settings";
+      settingsLink.style.cssText = "cursor:pointer;text-decoration:underline;color:#9ca3af;";
+      settingsLink.addEventListener("click", () => {
+        closeOverlay();
+        chrome.runtime.sendMessage({ type: "OPEN_OPTIONS_PAGE" }).catch(() => {});
+      });
+      footer.appendChild(settingsLink);
+
+      box.appendChild(header);
+      box.appendChild(listEl);
+      box.appendChild(footer);
+      overlayEl.appendChild(box);
+      document.body.appendChild(overlayEl);
+      searchInput.focus();
+
+      overlayEl.addEventListener("click", (e) => { if (e.target === overlayEl) closeOverlay(); });
+
+      searchInput.addEventListener("keydown", (e) => {
+        const items = getVisibleItems();
+        if (e.key === "Escape") { closeOverlay(); return; }
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          focusedIdx = Math.min(focusedIdx + 1, items.length - 1);
+          updateFocus(items);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          focusedIdx = Math.max(focusedIdx - 1, 0);
+          updateFocus(items);
+        } else if (e.key === "Enter" && items[focusedIdx]) {
+          items[focusedIdx].click();
+        }
+      });
+
+      searchInput.addEventListener("input", () => {
+        const q = searchInput.value.toLowerCase();
+        focusedIdx = -1;
+        [...listEl.querySelectorAll("[data-qms-item]")].forEach((item) => {
+          const match = (item.dataset.label || "").toLowerCase().includes(q);
+          item.style.display = match ? "flex" : "none";
+        });
+        updateFocus(getVisibleItems());
+      });
+
+      // Load market data — popup cache first (seller_extension_market_cache_v2), fresh fetch as fallback
+      let marketData = null;
+      let fetchError = null;
+      try {
+        const CACHE_KEY = "seller_extension_market_cache_v2";
+        const CACHE_TTL = 30 * 60 * 1000;
+        const cached = await new Promise(r => chrome.storage.local.get(CACHE_KEY, d => r(d[CACHE_KEY])));
+        if (cached && Date.now() - (cached.cachedAt || 0) < CACHE_TTL) {
+          marketData = cached.data;
+        } else {
+          marketData = await marketFetchCurrentAccountMarkets();
+          chrome.storage.local.set({ [CACHE_KEY]: { data: marketData, cachedAt: Date.now() } });
+        }
+      } catch (err) {
+        fetchError = err.message || String(err);
+        console.error("[SellerTools QMS] market fetch failed:", err);
+      }
+
+      listEl.innerHTML = "";
+      if (!marketData || !marketData.standaloneRegionalAccounts?.length) {
+        const errDiv = document.createElement("div");
+        errDiv.textContent = fetchError
+          ? `Could not load markets: ${fetchError}`
+          : "No markets found. Open the extension market selector first.";
+        Object.assign(errDiv.style, {
+          padding: "24px 20px", textAlign: "center", color: "#6b7280", fontSize: "12px", lineHeight: "1.5",
+        });
+        listEl.appendChild(errDiv);
+        return;
+      }
+
+      const hiddenMkids = await new Promise(r =>
+        chrome.storage.local.get("_qmsHiddenMarkets", d => r(d._qmsHiddenMarkets || []))
+      );
+      const hiddenSet = new Set(hiddenMkids);
+      const currentMkid = marketData.current?.regionalAccount?.ids?.mons_sel_mkid;
+      focusedIdx = -1;
+
+      const displayMarkets = marketData.standaloneRegionalAccounts.filter(
+        m => !hiddenSet.has(m.ids?.mons_sel_mkid)
+      );
+
+      if (displayMarkets.length === 0) {
+        const msg = document.createElement("div");
+        msg.textContent = "All markets are hidden. Configure visibility in extension Settings.";
+        Object.assign(msg.style, { padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px" });
+        listEl.appendChild(msg);
+        return;
+      }
+
+      displayMarkets.forEach((market) => {
+        const mkid = market.ids?.mons_sel_mkid;
+        const isActive = mkid === currentMkid;
+
+        const item = document.createElement("div");
+        item.setAttribute("data-qms-item", "");
+        item.setAttribute("data-label", market.label || "");
+        Object.assign(item.style, {
+          display: "flex", alignItems: "center", gap: "10px",
+          padding: "10px 16px", cursor: isActive ? "default" : "pointer",
+          borderBottom: "1px solid #f3f4f6",
+          background: isActive ? "#eff6ff" : "",
+        });
+
+        const flagSpan = document.createElement("span");
+        flagSpan.textContent = getFlag(market.label || "");
+        flagSpan.style.cssText = "font-size:20px;flex-shrink:0;";
+
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = market.label || "Unknown";
+        Object.assign(nameSpan.style, {
+          fontSize: "14px", color: "#111827", flex: "1",
+          fontWeight: isActive ? "600" : "400",
+        });
+        item.appendChild(flagSpan);
+        item.appendChild(nameSpan);
+
+        if (isActive) {
+          const badge = document.createElement("span");
+          badge.textContent = "active";
+          Object.assign(badge.style, {
+            fontSize: "10px", color: "#3B82F6",
+            background: "#dbeafe", borderRadius: "4px",
+            padding: "2px 6px", fontWeight: "600", flexShrink: "0",
+          });
+          item.appendChild(badge);
+        } else {
+          item.addEventListener("mouseenter", () => { item.style.background = "#f9fafb"; });
+          item.addEventListener("mouseleave", () => { item.style.background = ""; });
+          item.addEventListener("click", async () => {
+            const sellerName = marketData.current?.globalAccount?.label
+              || marketData.current?.parentGlobalAccount?.label
+              || null;
+            const marketLabel = market.label || null;
+            if (sellerName || marketLabel) {
+              await new Promise(r => chrome.storage.local.set({
+                _pendingAccountSwitch: { sellerName, marketLabel, ts: Date.now() }
+              }, r));
+            }
+            closeOverlay();
+            window.location.href = buildSwitchUrl(market);
+          });
+        }
+
+        listEl.appendChild(item);
+      });
+    }
+
+    function isInputFocused() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName.toUpperCase();
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+    }
+
+    // Shortcut — loaded from storage, defaults to Shift+S
+    const QMS_SHORTCUT_STORAGE_KEY = "_qmsShortcut";
+    let qmsShortcut = { key: "s", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false };
+
+    chrome.storage.local.get(QMS_SHORTCUT_STORAGE_KEY, (d) => {
+      if (d[QMS_SHORTCUT_STORAGE_KEY]) qmsShortcut = d[QMS_SHORTCUT_STORAGE_KEY];
+    });
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[QMS_SHORTCUT_STORAGE_KEY]?.newValue) {
+        qmsShortcut = changes[QMS_SHORTCUT_STORAGE_KEY].newValue;
+      }
+    });
+
+    document.addEventListener("keydown", (e) => {
+      const keyMatch = qmsShortcut.key && qmsShortcut.key.length === 1
+        ? e.key.toLowerCase() === qmsShortcut.key.toLowerCase()
+        : e.key === qmsShortcut.key;
+      if (
+        keyMatch &&
+        !!e.shiftKey === !!(qmsShortcut.shiftKey) &&
+        !!e.ctrlKey  === !!(qmsShortcut.ctrlKey) &&
+        !!e.altKey   === !!(qmsShortcut.altKey) &&
+        !!e.metaKey  === !!(qmsShortcut.metaKey) &&
+        !isInputFocused()
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        void openOverlay();
+      }
+    }, true);
+  }
+
   if (isAmazon) {
     void notifyBackgroundWhenReady();
+    initQuickMarketSwitcher();
   }
   void ibaRunCurrentPhase().catch((error) => {
     ibaLog("Automation failed.", error);

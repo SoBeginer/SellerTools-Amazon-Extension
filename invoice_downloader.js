@@ -54,6 +54,7 @@
   const years        = [...new Set(params.years.map(String))]; // dedupe years
   const docType      = params.docType      ?? "all"; // "all" | "invoice" | "creditNote"
   const downloadMode = params.downloadMode ?? "zip"; // "individual" | "zip"
+  const includeCsv   = params.includeCsv   ?? false;
 
   const targetLabel = years.join(", ");
   log(`Starting — targets: ${targetLabel}`);
@@ -112,6 +113,8 @@
 
   let startDateIdx = headerTexts.findIndex((h) => h.includes("start") && h.includes("date"));
   let endDateIdx   = headerTexts.findIndex((h) => h.includes("end")   && h.includes("date"));
+  const fileTypeIdx = headerTexts.findIndex((h) => h.includes("file") && h.includes("type"));
+  log(`File Type column index: ${fileTypeIdx}`);
 
   if (startDateIdx === -1 && endDateIdx === -1) {
     const fb = headerTexts.findIndex(
@@ -165,6 +168,12 @@
     return candidates.some((c) => /CN/i.test(c?.textContent.trim() ?? ""));
   }
 
+  function isFileTypeCsv(row) {
+    if (fileTypeIdx === -1) return false;
+    const cells = [...row.querySelectorAll("td")];
+    return cells[fileTypeIdx]?.textContent.trim().toUpperCase() === "CSV";
+  }
+
   // ─── Collect matching rows ────────────────────────────────────────────────────
 
   const allBodyRows = [...table.querySelectorAll("tbody tr")]
@@ -179,7 +188,7 @@
     if (docType === "invoice")    return !cn;
     if (docType === "creditNote") return  cn;
     return true; // "all"
-  });
+  }).filter((row) => includeCsv || !isFileTypeCsv(row));
 
   const invoiceCount    = matchingRows.filter((r) => !isCreditNote(r)).length;
   const creditNoteCount = matchingRows.filter((r) =>  isCreditNote(r)).length;
@@ -230,13 +239,16 @@
     return url;
   }
 
-  function filenameFromUrl(url, fallbackId) {
+  function filenameFromUrl(url, fallbackId, ext = "pdf") {
     try {
       const u    = new URL(url, location.origin);
       const last = u.pathname.split("/").filter(Boolean).pop()?.split("?")[0] ?? "";
-      if (last.length > 4) return last.endsWith(".pdf") ? last : `${last}.pdf`;
+      if (last.length > 4) {
+        const dot = last.lastIndexOf(".");
+        return dot > 0 ? last : `${last}.${ext}`;
+      }
     } catch (_) {}
-    return `${fallbackId}_invoice.pdf`;
+    return `${fallbackId}_invoice.${ext}`;
   }
 
   function extractInvoiceId(row) {
@@ -272,6 +284,7 @@
     const row       = matchingRows[i];
     const invoiceId = extractInvoiceId(row);
     const viewBtn   = findViewButton(row);
+    const ext       = isFileTypeCsv(row) ? "csv" : "pdf";
 
     if (!viewBtn) {
       warn(`Row ${i + 1}: no "View" button — skipping.`);
@@ -292,7 +305,7 @@
       }
       seenUrls.add(absoluteUrl);
 
-      const baseName = filenameFromUrl(absoluteUrl, invoiceId);
+      const baseName = filenameFromUrl(absoluteUrl, invoiceId, ext);
 
       if (downloadMode === "zip") {
         log(`Row ${i + 1}: fetching for ZIP — "${baseName}"…`);

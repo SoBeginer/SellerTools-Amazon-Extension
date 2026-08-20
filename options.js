@@ -5,6 +5,8 @@
   const AMAZON_MODEL_KEY = "seller_extension_amazon_model_v1";  // sync
   const USER_TYPE_KEY    = "seller_extension_user_type_v1";     // sync
   const MCF_ORDERS_KEY   = "seller_extension_mcf_orders_v1";    // sync
+  const QMS_HIDDEN_KEY   = "_qmsHiddenMarkets";                 // local
+  const MARKET_CACHE_KEY = "seller_extension_market_cache_v2";  // local
 
   // ── i18n strings ────────────────────────────────────────────────────────
   // Keys used by [data-i18n] attributes in the HTML.
@@ -220,6 +222,143 @@
     diagBtn.disabled = false;
   }
 
+  // ── Quick Market Switcher — keyboard shortcut picker ─────────────────────
+  const QMS_SHORTCUT_KEY = "_qmsShortcut";
+  const QMS_DEFAULT_SHORTCUT = { key: "s", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, display: "Shift+S" };
+
+  function shortcutFromEvent(e) {
+    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
+    const parts = [];
+    if (e.ctrlKey)  parts.push("Ctrl");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.altKey)   parts.push("Alt");
+    if (e.metaKey)  parts.push("⌘");
+    if (!parts.length) return null; // bare letter without modifier — rejected
+    const keyLabel = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    parts.push(keyLabel);
+    const normalizedKey = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    return { key: normalizedKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, altKey: e.altKey, metaKey: e.metaKey, display: parts.join("+") };
+  }
+
+  async function loadQmsShortcut() {
+    const box      = document.getElementById("qmsShortcutBox");
+    const resetBtn = document.getElementById("qmsShortcutReset");
+    if (!box) return;
+
+    const { [QMS_SHORTCUT_KEY]: saved } = await chrome.storage.local.get(QMS_SHORTCUT_KEY);
+    box.textContent = (saved || QMS_DEFAULT_SHORTCUT).display;
+
+    let listening = false;
+
+    box.addEventListener("focus", () => {
+      listening = true;
+      box.textContent = "Press keys…";
+      box.style.borderColor = "#3b82f6";
+      box.style.boxShadow   = "0 0 0 3px rgba(59,130,246,0.15)";
+      box.style.color       = "#6b7280";
+    });
+
+    box.addEventListener("blur", () => {
+      listening = false;
+      box.style.borderColor = "";
+      box.style.boxShadow   = "";
+      box.style.color       = "#111827";
+      chrome.storage.local.get(QMS_SHORTCUT_KEY, (d) => {
+        box.textContent = (d[QMS_SHORTCUT_KEY] || QMS_DEFAULT_SHORTCUT).display;
+      });
+    });
+
+    box.addEventListener("keydown", async (e) => {
+      if (!listening) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const sc = shortcutFromEvent(e);
+      if (!sc) { box.textContent = "Need modifier…"; return; }
+      listening = false;
+      box.textContent = sc.display;
+      box.style.borderColor = "";
+      box.style.boxShadow   = "";
+      box.style.color       = "#111827";
+      box.blur();
+      await chrome.storage.local.set({ [QMS_SHORTCUT_KEY]: sc });
+      showToast(getStrings(currentLang).msgSaved);
+    });
+
+    resetBtn?.addEventListener("click", async () => {
+      await chrome.storage.local.set({ [QMS_SHORTCUT_KEY]: QMS_DEFAULT_SHORTCUT });
+      box.textContent = QMS_DEFAULT_SHORTCUT.display;
+      showToast(getStrings(currentLang).msgSaved);
+    });
+  }
+
+  // ── Quick Market Switcher market visibility ──────────────────────────────
+  const QMS_FLAGS = {
+    "germany": "🇩🇪", "france": "🇫🇷", "italy": "🇮🇹", "spain": "🇪🇸",
+    "united kingdom": "🇬🇧", "uk": "🇬🇧", "netherlands": "🇳🇱", "poland": "🇵🇱",
+    "sweden": "🇸🇪", "belgium": "🇧🇪", "ireland": "🇮🇪", "turkey": "🇹🇷",
+    "czechia": "🇨🇿", "czech republic": "🇨🇿", "austria": "🇦🇹",
+    "united states": "🇺🇸", "usa": "🇺🇸", "canada": "🇨🇦", "mexico": "🇲🇽",
+    "japan": "🇯🇵", "australia": "🇦🇺", "singapore": "🇸🇬", "india": "🇮🇳",
+    "uae": "🇦🇪", "united arab emirates": "🇦🇪", "saudi arabia": "🇸🇦", "egypt": "🇪🇬",
+  };
+
+  async function loadQmsMarkets() {
+    const listEl = document.getElementById("qmsMarketList");
+    if (!listEl) return;
+
+    const [cacheResult, hiddenResult] = await Promise.all([
+      chrome.storage.local.get(MARKET_CACHE_KEY),
+      chrome.storage.local.get(QMS_HIDDEN_KEY),
+    ]);
+
+    const markets = cacheResult[MARKET_CACHE_KEY]?.data?.standaloneRegionalAccounts || [];
+    const hiddenSet = new Set(hiddenResult[QMS_HIDDEN_KEY] || []);
+
+    listEl.innerHTML = "";
+
+    if (markets.length === 0) {
+      listEl.innerHTML = '<div style="font-size:13px;color:#999;padding:4px 0;">No markets loaded yet — open Seller Central and use the extension\'s market selector first.</div>';
+      return;
+    }
+
+    markets.forEach((market) => {
+      const mkid = market.ids?.mons_sel_mkid;
+      const flag = QMS_FLAGS[(market.label || "").toLowerCase()] || "🌐";
+      const isVisible = !hiddenSet.has(mkid);
+
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const labelDiv = document.createElement("div");
+      labelDiv.className = "row-label";
+      const span = document.createElement("span");
+      span.textContent = `${flag} ${market.label || "Unknown"}`;
+      labelDiv.appendChild(span);
+
+      const toggleLabel = document.createElement("label");
+      toggleLabel.className = "toggle";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = isVisible;
+      const track = document.createElement("span");
+      track.className = "toggle-track";
+      toggleLabel.appendChild(input);
+      toggleLabel.appendChild(track);
+
+      input.addEventListener("change", async () => {
+        const { [QMS_HIDDEN_KEY]: current = [] } = await chrome.storage.local.get(QMS_HIDDEN_KEY);
+        const updated = new Set(current);
+        if (input.checked) { updated.delete(mkid); } else { updated.add(mkid); }
+        await chrome.storage.local.set({ [QMS_HIDDEN_KEY]: [...updated] });
+        showToast(getStrings(currentLang).msgSaved);
+      });
+
+      row.appendChild(labelDiv);
+      row.appendChild(toggleLabel);
+      listEl.appendChild(row);
+    });
+  }
+
   // ── Version label ─────────────────────────────────────────────────────────
   function setVersion() {
     versionLabel.textContent = `v${chrome.runtime.getManifest().version}`;
@@ -238,4 +377,6 @@
   // ── Init ──────────────────────────────────────────────────────────────────
   setVersion();
   loadSettings();
+  loadQmsShortcut();
+  loadQmsMarkets();
 })();

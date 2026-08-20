@@ -28,11 +28,6 @@
   const ibaSectionToggle = document.getElementById("ibaSectionToggle");
   const ibaSectionBody = document.getElementById("ibaSectionBody");
   const ibaAutomationButton = document.getElementById("ibaAutomationButton");
-  const ibaScheduleTimeInput = document.getElementById("ibaScheduleTimeInput");
-  const ibaScheduleSaveButton = document.getElementById("ibaScheduleSaveButton");
-  const ibaScheduleDisableButton = document.getElementById("ibaScheduleDisableButton");
-  const ibaScheduleStatus = document.getElementById("ibaScheduleStatus");
-  const ibaStopButton = document.getElementById("ibaStopButton");
   const marketSectionToggle = document.getElementById("marketSectionToggle");
   const marketSectionBody = document.getElementById("marketSectionBody");
   const marketCurrentLabel = document.getElementById("marketCurrentLabel");
@@ -113,10 +108,6 @@
 
   function setStatus(message) {
     statusElement.textContent = message;
-  }
-
-  function setIbaScheduleStatus(message) {
-    ibaScheduleStatus.textContent = message;
   }
 
   function setDraftScheduleStatus(message) {
@@ -291,7 +282,8 @@
 
   function canInjectIntoTab(url) {
     return typeof url === "string" && (
-      /^https:\/\/sellercentral\.amazon\./.test(url) ||
+      /^https:\/\/sellercentral(?:-europe)?\.amazon\./.test(url) ||
+      /^https:\/\/solutionproviderportal\.amazon\.com\//.test(url) ||
       /^https:\/\/expandoadmin\.retool\.com\//.test(url)
     );
   }
@@ -340,22 +332,6 @@
       : "pending";
     const emailText = config.selectedEmail ? ` for ${config.selectedEmail}` : "";
     return `Every ${config.intervalMinutes} min${emailText}. Next run: ${nextRunText}.`;
-  }
-
-  async function loadIbaSchedule() {
-    try {
-      const response = await chrome.runtime.sendMessage({ type: "GET_IBA_SCHEDULE" });
-
-      if (!response?.success) {
-        setIbaScheduleStatus("Unable to load schedule.");
-        return;
-      }
-
-      ibaScheduleTimeInput.value = response.config?.time || "17:00";
-      setIbaScheduleStatus(formatScheduleMessage(response.config));
-    } catch (error) {
-      setIbaScheduleStatus(error.message || "Unable to load schedule.");
-    }
   }
 
   async function loadDraftSchedule() {
@@ -718,10 +694,150 @@
     setSectionExpanded(priceFixSectionToggle, priceFixSectionBody, !expanded);
   });
 
+  const IBA_CLIENT_LIST_KEY = "_ibaClientList";
+  const IBA_MULTI_PROGRESS_KEY_POP = "_ibaMultiProgress";
+  let ibaProgressInterval = null;
+
   ibaSectionToggle.addEventListener("click", () => {
     const expanded = ibaSectionToggle.getAttribute("aria-expanded") === "true";
     setSectionExpanded(ibaSectionToggle, ibaSectionBody, !expanded);
+    if (!expanded) void ibaInitClientSection();
   });
+
+  async function ibaInitClientSection() {
+    await ibaRenderClientChips();
+    await ibaPopulateAccountDropdown();
+  }
+
+  async function ibaLoadSavedClients() {
+    const s = await chrome.storage.local.get(IBA_CLIENT_LIST_KEY);
+    return Array.isArray(s[IBA_CLIENT_LIST_KEY]) ? s[IBA_CLIENT_LIST_KEY] : [];
+  }
+
+  async function ibaSaveClients(list) {
+    await chrome.storage.local.set({ [IBA_CLIENT_LIST_KEY]: list });
+  }
+
+  async function ibaRenderClientChips() {
+    const listEl = document.getElementById("ibaClientList");
+    const hintEl = document.getElementById("ibaClientListHint");
+    if (!listEl) return;
+
+    const clients = await ibaLoadSavedClients();
+    listEl.innerHTML = "";
+
+    if (!clients.length) {
+      if (hintEl) hintEl.textContent = "Žádní klienti. Přidej z dropdownu níže.";
+      return;
+    }
+    if (hintEl) hintEl.textContent = "";
+
+    clients.forEach((name, idx) => {
+      const chip = document.createElement("div");
+      chip.className = "iba-client-chip";
+      chip.innerHTML = `<span>${name}</span><button class="iba-client-chip-remove" data-idx="${idx}" type="button" title="Odebrat">✕</button>`;
+      chip.querySelector(".iba-client-chip-remove").addEventListener("click", async () => {
+        const cur = await ibaLoadSavedClients();
+        cur.splice(idx, 1);
+        await ibaSaveClients(cur);
+        await ibaRenderClientChips();
+      });
+      listEl.appendChild(chip);
+    });
+  }
+
+  async function ibaPopulateAccountDropdown() {
+    const sel = document.getElementById("ibaAddClientSelect");
+    if (!sel) return;
+
+    const s = await chrome.storage.local.get("_accountListAccounts");
+    const accounts = s["_accountListAccounts"]?.accounts;
+    if (!Array.isArray(accounts) || !accounts.length) {
+      sel.innerHTML = '<option value="">— Nejdřív načti Account Selector —</option>';
+      return;
+    }
+
+    const saved = await ibaLoadSavedClients();
+    const allLabels = accounts.map(a => a.label).filter(Boolean).sort();
+    const available = allLabels.filter(l => !saved.includes(l));
+
+    sel.innerHTML = '<option value="">— vyberte klienta —</option>' +
+      available.map(l => `<option value="${l}">${l}</option>`).join("");
+  }
+
+  document.getElementById("ibaAddClientButton")?.addEventListener("click", async () => {
+    const sel = document.getElementById("ibaAddClientSelect");
+    const name = sel?.value?.trim();
+    if (!name) return;
+
+    const clients = await ibaLoadSavedClients();
+    if (!clients.includes(name)) {
+      clients.push(name);
+      await ibaSaveClients(clients);
+    }
+    await ibaRenderClientChips();
+    await ibaPopulateAccountDropdown();
+  });
+
+  document.getElementById("ibaMultiRunButton")?.addEventListener("click", async () => {
+    const clients = await ibaLoadSavedClients();
+    if (!clients.length) {
+      setStatus("Přidej alespoň jednoho klienta.");
+      return;
+    }
+
+    const runBtn  = document.getElementById("ibaMultiRunButton");
+    const stopBtn = document.getElementById("ibaMultiStopButton");
+
+    const res = await chrome.runtime.sendMessage({ type: "IBA_MULTI_START", accounts: clients })
+      .catch(e => ({ success: false, error: e.message }));
+
+    if (!res?.success) { setStatus("Chyba: " + (res?.error || "Neznámá")); return; }
+
+    if (runBtn)  runBtn.style.display  = "none";
+    if (stopBtn) stopBtn.style.display = "";
+    ibaStartProgressPolling();
+  });
+
+  document.getElementById("ibaMultiStopButton")?.addEventListener("click", async () => {
+    await chrome.runtime.sendMessage({ type: "IBA_MULTI_STOP" }).catch(() => {});
+    ibaStopProgressPolling();
+    const runBtn  = document.getElementById("ibaMultiRunButton");
+    const stopBtn = document.getElementById("ibaMultiStopButton");
+    if (runBtn)  runBtn.style.display  = "";
+    if (stopBtn) stopBtn.style.display = "none";
+  });
+
+  function ibaStartProgressPolling() {
+    const progEl = document.getElementById("ibaMultiProgress");
+    if (progEl) progEl.style.display = "";
+
+    ibaProgressInterval = setInterval(async () => {
+      const s = await chrome.storage.local.get(IBA_MULTI_PROGRESS_KEY_POP);
+      const p = s[IBA_MULTI_PROGRESS_KEY_POP];
+      if (!p || !progEl) return;
+
+      if (p.done) {
+        const summary = (p.results || []).map(r =>
+          `${r.account}: ${r.status}${r.error ? " — " + r.error : ""}`
+        ).join("\n");
+        progEl.textContent = `Hotovo (${p.total} klientů).\n${summary}`;
+        ibaStopProgressPolling();
+        const runBtn  = document.getElementById("ibaMultiRunButton");
+        const stopBtn = document.getElementById("ibaMultiStopButton");
+        if (runBtn)  runBtn.style.display  = "";
+        if (stopBtn) stopBtn.style.display = "none";
+        return;
+      }
+
+      const pct = p.total > 0 ? `${p.current}/${p.total}` : "…";
+      progEl.textContent = `[${pct}] ${p.currentAccount || ""} — ${p.phase || ""}`;
+    }, 800);
+  }
+
+  function ibaStopProgressPolling() {
+    if (ibaProgressInterval) { clearInterval(ibaProgressInterval); ibaProgressInterval = null; }
+  }
 
   marketSectionToggle.addEventListener("click", () => {
     const expanded = marketSectionToggle.getAttribute("aria-expanded") === "true";
@@ -1228,44 +1344,6 @@
     }
   });
 
-  ibaScheduleSaveButton.addEventListener("click", async () => {
-    setIbaScheduleStatus("Saving schedule...");
-
-    try {
-      const time = ibaScheduleTimeInput.value || "17:00";
-      const response = await chrome.runtime.sendMessage({
-        type: "SAVE_IBA_SCHEDULE",
-        time
-      });
-
-      if (!response?.success) {
-        setIbaScheduleStatus(response?.error || "Unable to save schedule.");
-        return;
-      }
-
-      setIbaScheduleStatus(formatScheduleMessage(response.config));
-    } catch (error) {
-      setIbaScheduleStatus(error.message || "Unable to save schedule.");
-    }
-  });
-
-  ibaScheduleDisableButton.addEventListener("click", async () => {
-    setIbaScheduleStatus("Disabling schedule...");
-
-    try {
-      const response = await chrome.runtime.sendMessage({ type: "DISABLE_IBA_SCHEDULE" });
-
-      if (!response?.success) {
-        setIbaScheduleStatus(response?.error || "Unable to disable schedule.");
-        return;
-      }
-
-      setIbaScheduleStatus(formatScheduleMessage(response.config));
-    } catch (error) {
-      setIbaScheduleStatus(error.message || "Unable to disable schedule.");
-    }
-  });
-
   draftScheduleSaveButton.addEventListener("click", async () => {
     setDraftScheduleStatus("Saving schedule...");
 
@@ -1705,7 +1783,7 @@
     }
 
     const tab = await getActiveTab();
-    if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+    if (!tab?.id || !/amazon\./.test(tab.url || "")) {
       if (accountCurrentLabel) accountCurrentLabel.textContent = "—";
       setStatus("Open a Seller Central page first.");
       return;
@@ -1748,9 +1826,23 @@
     });
   }
 
-  // Common European market labels (matches Amazon account switcher labels)
-  const COMMON_MARKETS = ["Germany", "Poland", "France", "Italy", "Spain", "Netherlands", "Belgium",
-    "Sweden", "Czech Republic", "United Kingdom", "Turkey", "Egypt", "Saudi Arabia", "UAE"];
+  // Market label → country code mapping for account selector chips
+  const MARKET_CHIPS = [
+    { code: "DE", label: "Germany" },
+    { code: "GB", label: "United Kingdom" },
+    { code: "FR", label: "France" },
+    { code: "IT", label: "Italy" },
+    { code: "ES", label: "Spain" },
+    { code: "PL", label: "Poland" },
+    { code: "NL", label: "Netherlands" },
+    { code: "BE", label: "Belgium" },
+    { code: "SE", label: "Sweden" },
+    { code: "CZ", label: "Czech Republic" },
+    { code: "TR", label: "Turkey" },
+    { code: "EG", label: "Egypt" },
+    { code: "SA", label: "Saudi Arabia" },
+    { code: "AE", label: "UAE" },
+  ];
 
   function renderAccountTree(accounts) {
     if (!accountSelectorTree) return;
@@ -1767,8 +1859,12 @@
       accountCurrentLabel.textContent = currentAccount ? `Current: ${currentAccount.label}` : "Current: —";
     }
 
-    const rootAccounts = accounts.filter((a) => !a.parent);
     const childAccounts = accounts.filter((a) => !!a.parent);
+    const rootAccounts = accounts.filter((a) => !a.parent).sort((a, b) => {
+      const aSpn = a.hasChildren || childAccounts.some((c) => c.parent === a.label);
+      const bSpn = b.hasChildren || childAccounts.some((c) => c.parent === b.label);
+      return (bSpn ? 1 : 0) - (aSpn ? 1 : 0);
+    });
 
     for (const root of rootAccounts) {
       const children = childAccounts.filter((c) => c.parent === root.label);
@@ -1817,68 +1913,55 @@
     }
   }
 
-  // Build one account row: label button + inline market picker (appears on click)
+  // Build one account row: [Client name] [▾] with country chip dropdown
   function buildAccountRow(account, sellerName) {
     const wrap = document.createElement("div");
+    wrap.style.cssText = "margin:2px 0;";
+
     const isCurrent = account.isCurrent;
 
-    // Account label button
+    // Top row: name button + arrow button
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:2px;";
+
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.style.cssText = `display:block;width:100%;text-align:left;padding:5px 6px;margin:2px 0;border:none;border-radius:4px;cursor:pointer;font-size:12px;background:${isCurrent ? "#dbeafe" : "#fff"};color:${isCurrent ? "#1d4ed8" : "#374151"};`;
+    btn.style.cssText = `flex:1;min-width:0;text-align:left;padding:5px 6px;border:none;border-radius:4px;cursor:pointer;font-size:12px;background:${isCurrent ? "#dbeafe" : "#fff"};color:${isCurrent ? "#1d4ed8" : "#374151"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
     btn.textContent = (isCurrent ? "✓ " : "") + account.label;
+    btn.addEventListener("click", () => switchToAccount(sellerName, null));
 
-    // Inline market picker — hidden until account is clicked
-    const picker = document.createElement("div");
-    picker.style.cssText = "display:none;margin:4px 0 6px 0;padding:6px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;";
+    const arrowBtn = document.createElement("button");
+    arrowBtn.type = "button";
+    arrowBtn.textContent = "▾";
+    arrowBtn.style.cssText = "flex-shrink:0;padding:4px 6px;border:none;border-radius:4px;cursor:pointer;font-size:11px;background:#f3f4f6;color:#6b7280;";
 
-    const pickerLabel = document.createElement("div");
-    pickerLabel.textContent = "Market:";
-    pickerLabel.style.cssText = "font-size:11px;color:#6b7280;margin-bottom:4px;";
+    row.appendChild(btn);
+    row.appendChild(arrowBtn);
 
-    const marketInput = document.createElement("input");
-    marketInput.type = "text";
-    marketInput.placeholder = "e.g. Germany, Poland…";
-    marketInput.style.cssText = "width:100%;box-sizing:border-box;padding:4px 6px;font-size:12px;border:1px solid #d1d5db;border-radius:3px;margin-bottom:6px;";
+    // Country chip strip — hidden until arrow clicked
+    const chips = document.createElement("div");
+    chips.style.cssText = "display:none;flex-wrap:wrap;gap:3px;padding:4px 2px 2px;";
 
-    // Datalist with common markets
-    const dl = document.createElement("datalist");
-    dl.id = `acct-markets-${sellerName.replace(/\s+/g, "-")}`;
-    COMMON_MARKETS.forEach((m) => {
-      const opt = document.createElement("option");
-      opt.value = m;
-      dl.appendChild(opt);
-    });
-    marketInput.setAttribute("list", dl.id);
-
-    const switchBtn = document.createElement("button");
-    switchBtn.type = "button";
-    switchBtn.textContent = "▶ Přepnout";
-    switchBtn.style.cssText = "width:100%;padding:5px;background:#2563eb;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;";
-
-    switchBtn.addEventListener("click", () => {
-      const market = marketInput.value.trim() || null;
-      switchToAccount(sellerName, market);
+    MARKET_CHIPS.forEach(({ code, label }) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.textContent = code;
+      chip.title = label;
+      chip.style.cssText = "padding:2px 6px;font-size:11px;border:1px solid #d1d5db;border-radius:3px;cursor:pointer;background:#fff;color:#374151;";
+      chip.addEventListener("mouseover", () => { chip.style.background = "#2563eb"; chip.style.color = "#fff"; chip.style.borderColor = "#2563eb"; });
+      chip.addEventListener("mouseout", () => { chip.style.background = "#fff"; chip.style.color = "#374151"; chip.style.borderColor = "#d1d5db"; });
+      chip.addEventListener("click", () => switchToAccount(sellerName, label));
+      chips.appendChild(chip);
     });
 
-    // Also allow Enter key in market input
-    marketInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); switchBtn.click(); }
+    arrowBtn.addEventListener("click", () => {
+      const open = chips.style.display !== "none";
+      chips.style.display = open ? "none" : "flex";
+      arrowBtn.textContent = open ? "▾" : "▴";
     });
 
-    picker.appendChild(dl);
-    picker.appendChild(pickerLabel);
-    picker.appendChild(marketInput);
-    picker.appendChild(switchBtn);
-
-    btn.addEventListener("click", () => {
-      const open = picker.style.display !== "none";
-      picker.style.display = open ? "none" : "block";
-      if (!open) marketInput.focus();
-    });
-
-    wrap.appendChild(btn);
-    wrap.appendChild(picker);
+    wrap.appendChild(row);
+    wrap.appendChild(chips);
     return wrap;
   }
 
@@ -1895,24 +1978,99 @@
     await chrome.storage.local.set({ _pendingAccountSwitch: payload });
     console.log("[SellerTools popup] storage written, navigating tab", tab.id, "to account-switcher");
 
-    const domain = new URL(tab.url).hostname;
+    const rawDomain = new URL(tab.url).hostname;
+    const domain = /sellercentral\.amazon/.test(rawDomain) ? rawDomain : "sellercentral.amazon.de";
     await chrome.tabs.update(tab.id, { url: `https://${domain}/account-switcher/default/merchantMarketplace` });
     window.close();
   }
 
   // ─── End Account Selector ──────────────────────────────────────────────────
 
-  document.getElementById("violationsButton").addEventListener("click", async () => {
-    setStatus("Starting...");
+  // ─── Violations market dropdown ────────────────────────────────────────────
 
+  let _violationsSessionMarkets = null;
+
+  const refreshViolationsDropdown = setupMarketDropdown(
+    "violationsMarketBtn", "violationsMarketPanel", "violations-market-cb",
+    "violationsMarketLabel", "violationsMarketSelectAll",
+    () => void violationsOpenMarketDropdown()
+  );
+
+  function violationsRenderMarkets(markets, panel) {
+    panel.querySelectorAll("label:not(.inv-select-all-row), .violations-market-status").forEach((el) => el.remove());
+    markets.filter((r) => !isPendingMarket(r)).forEach((r) => {
+      const mkid = r.ids?.mons_sel_mkid || "";
+      if (!mkid) return;
+      const lbl = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.className = "violations-market-cb";
+      cb.dataset.mkid = mkid;
+      cb.dataset.label = r.label || mkid;
+      cb.dataset.code = r.label || mkid;
+      cb.checked = true;
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(` ${r.label || mkid}`));
+      panel.appendChild(lbl);
+    });
+    refreshViolationsDropdown();
+  }
+
+  async function violationsOpenMarketDropdown() {
+    const panel = document.getElementById("violationsMarketPanel");
+    if (!panel) return;
+    if (_violationsSessionMarkets) { violationsRenderMarkets(_violationsSessionMarkets, panel); return; }
+    let statusEl = panel.querySelector(".violations-market-status");
+    if (!statusEl) {
+      statusEl = document.createElement("div");
+      statusEl.className = "violations-market-status";
+      statusEl.style.cssText = "padding:8px 10px;color:#6b7280;font-size:12px;";
+      panel.appendChild(statusEl);
+    }
+    statusEl.textContent = "Loading markets…";
     try {
-      const response = await chrome.runtime.sendMessage({ type: "START_VIOLATIONS_EXPORT" });
-
-      if (!response?.success) {
-        setStatus(response?.error || "Unable to start.");
-        return;
+      const tab = await getActiveTab();
+      if (!tab?.id || !/^https:\/\/sellercentral\.amazon\./.test(tab.url || "")) {
+        statusEl.textContent = "Open Seller Central first."; return;
       }
+      let cached = await loadMarketCache();
+      if (!cached) {
+        const response = await ensureContentScriptAndSend(tab, { action: "GET_MARKET_DATA" });
+        if (response?.success && response.data) { await saveMarketCache(response.data); cached = response.data; }
+      }
+      if (!cached) { statusEl.textContent = "Could not load markets."; return; }
+      const markets = cached.standaloneRegionalAccounts || [];
+      if (!markets.length) { statusEl.textContent = "No markets found."; return; }
+      _violationsSessionMarkets = markets;
+      violationsRenderMarkets(markets, panel);
+    } catch (err) { statusEl.textContent = `Error: ${err.message}`; }
+  }
 
+  function violationsGetSelectedMarkets() {
+    return [...document.querySelectorAll("#violationsMarketPanel .violations-market-cb:checked")]
+      .map((cb) => ({ label: cb.dataset.label || "", code: cb.dataset.code || "" }))
+      .filter((m) => m.label);
+  }
+
+  function violationsSetRunning(running) {
+    const exportBtn = document.getElementById("violationsButton");
+    const stopBtn = document.getElementById("violationsStopButton");
+    if (!exportBtn || !stopBtn) return;
+    exportBtn.style.display = running ? "none" : "";
+    stopBtn.style.display = running ? "" : "none";
+  }
+
+  document.getElementById("violationsButton").addEventListener("click", async () => {
+    const markets = violationsGetSelectedMarkets();
+    setStatus("Starting...");
+    let sellerName = null;
+    try {
+      const cached = await loadMarketCache();
+      sellerName = cached?.current?.globalAccount?.label || null;
+    } catch { /* ignore */ }
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "START_VIOLATIONS_EXPORT", markets, sellerName });
+      if (!response?.success) { setStatus(response?.error || "Unable to start."); return; }
+      violationsSetRunning(true);
       setStatus("Opening violations tab...");
       window.close();
     } catch (error) {
@@ -2105,13 +2263,19 @@
     }
   });
 
-  ibaStopButton.addEventListener("click", () => {
-    setStatus("IBA stop is not implemented yet.");
+
+  violationsStopButton.addEventListener("click", async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: "STOP_VIOLATIONS_EXPORT" });
+      violationsSetRunning(false);
+      setStatus("Violations export stopped.");
+    } catch { /* ignore */ }
   });
 
-  violationsStopButton.addEventListener("click", () => {
-    setStatus("Violations stop is not implemented yet.");
-  });
+  // Check if violations export is already running when popup opens
+  chrome.runtime.sendMessage({ type: "GET_VIOLATIONS_STATE" }).then((resp) => {
+    if (resp?.success) violationsSetRunning(true);
+  }).catch(() => {});
 
   vatReportSectionToggle.addEventListener("click", () => {
     const expanded = vatReportSectionToggle.getAttribute("aria-expanded") === "true";
@@ -2195,15 +2359,11 @@
     const now       = new Date();
     const nowYear   = now.getFullYear();
     const nowMonth  = now.getMonth() + 1;
-    const nowDay    = now.getDate();
-    const prevMonth = nowMonth === 1 ? 12 : nowMonth - 1;
-    const prevYear  = nowMonth === 1 ? nowYear - 1 : nowYear;
 
     const validCombos = [];
     for (const y of years) {
       for (const m of months) {
         if (y > nowYear || (y === nowYear && m >= nowMonth)) continue;
-        if (y === prevYear && m === prevMonth && nowDay < 15) continue;
         validCombos.push({ month: m, year: y });
       }
     }
@@ -2217,6 +2377,7 @@
 
     const docType      = invoiceSectionBody.querySelector(".invoice-doc-type:checked")?.value ?? "all";
     const downloadMode = invoiceSectionBody.querySelector(".invoice-download-mode:checked")?.value ?? "zip";
+    const includeCsv   = document.getElementById("invoiceIncludeCsv")?.checked ?? false;
 
     // Show spinner immediately
     invoiceStatusEl.style.display = "flex";
@@ -2232,6 +2393,7 @@
         years:   validCombos.map((c) => c.year),
         docType,
         downloadMode,
+        includeCsv,
       });
       if (!response?.success) {
         invoiceLbl.textContent = response?.error || "Chyba";
@@ -2251,6 +2413,13 @@
 
   bookmarksViewButton.addEventListener("click", () => {
     setActiveView("bookmarks");
+  });
+
+  document.getElementById("openOptionsBtn")?.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
+  });
+  document.getElementById("openOptionsBtn2")?.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
   });
 
   const SCBookmarks = (() => {
@@ -2682,7 +2851,7 @@
 
   (async () => {
     const tab = await getActiveTab();
-    const onSC = typeof tab?.url === "string" && /sellercentral\.amazon/.test(tab.url);
+    const onSC = typeof tab?.url === "string" && (/sellercentral(?:-europe)?\.amazon/.test(tab.url) || /solutionproviderportal\.amazon\.com/.test(tab.url));
     if (!onSC) {
       notScPanel.removeAttribute("hidden");
       notScPanel.style.display = "flex";
@@ -2850,10 +3019,381 @@
     });
 
     void loadDryRunSetting();
-    void loadIbaSchedule();
     void loadDraftSchedule();
     void loadDraftCollectionState();
     void loadAndShowDraftProgress();
     void loadDraftCsvMode().then(updateDraftModeLabel);
   })();
+
+  // ── SPP Management ─────────────────────────────────────────────────────────
+
+  const SPP_ROLES_KEY = "_sppRoles";
+  const SPP_ASSIGN_PROGRESS_KEY = "_sppAssignProgress";
+  const SPP_ASSIGN_LOG_KEY = "_sppAssignLog";
+
+  let sppEmployees = [];
+  let sppClients = [];
+  let sppProgressInterval = null;
+
+  // Inner tool-card toggles
+  const sppAssignSectionToggle = document.getElementById("sppAssignSectionToggle");
+  const sppAssignSectionBody   = document.getElementById("sppAssignSectionBody");
+  const sppRolesSectionToggle  = document.getElementById("sppRolesSectionToggle");
+  const sppRolesSectionBody    = document.getElementById("sppRolesSectionBody");
+
+  sppAssignSectionToggle?.addEventListener("click", () => {
+    const expanded = sppAssignSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(sppAssignSectionToggle, sppAssignSectionBody, !expanded);
+  });
+  sppRolesSectionToggle?.addEventListener("click", () => {
+    const expanded = sppRolesSectionToggle.getAttribute("aria-expanded") === "true";
+    setSectionExpanded(sppRolesSectionToggle, sppRolesSectionBody, !expanded);
+    if (!expanded) void sppLoadRoles();
+  });
+
+  // ── Roles CRUD ─────────────────────────────────────────────────────────────
+
+  async function sppGetRoles() {
+    const s = await chrome.storage.local.get(SPP_ROLES_KEY);
+    return Array.isArray(s[SPP_ROLES_KEY]) ? s[SPP_ROLES_KEY] : [];
+  }
+
+  async function sppSaveRoles(roles) {
+    await chrome.storage.local.set({ [SPP_ROLES_KEY]: roles });
+  }
+
+  async function sppLoadRoles() {
+    const roles = await sppGetRoles();
+    sppRenderRoles(roles);
+    sppPopulateRoleDropdown(roles);
+  }
+
+  function sppRenderRoles(roles) {
+    const list = document.getElementById("sppRolesList");
+    if (!list) return;
+    if (!roles.length) {
+      list.innerHTML = '<p style="color:#9CA3AF;font-size:11px;margin:0;">Žádné role. Přidej roli nebo importuj ze zaměstnance.</p>';
+      return;
+    }
+    list.innerHTML = roles.map((role, idx) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;margin-bottom:4px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px;">
+        <span style="font-size:12px;font-weight:500;color:#374151;">${role.name}</span>
+        <div style="display:flex;gap:4px;">
+          <span style="font-size:10px;color:#9CA3AF;">${Object.keys(role.permissions || {}).length} oprávnění</span>
+          <button data-idx="${idx}" class="spp-role-del" type="button" title="Smazat roli"
+            style="padding:2px 6px;font-size:11px;border:1px solid #FCA5A5;border-radius:4px;background:#FEF2F2;color:#DC2626;cursor:pointer;">✕</button>
+        </div>
+      </div>`).join("");
+
+    list.querySelectorAll(".spp-role-del").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const roles2 = await sppGetRoles();
+        roles2.splice(Number(btn.dataset.idx), 1);
+        await sppSaveRoles(roles2);
+        sppRenderRoles(roles2);
+        sppPopulateRoleDropdown(roles2);
+      });
+    });
+  }
+
+  function sppPopulateRoleDropdown(roles) {
+    const sel = document.getElementById("sppAssignRoleSelect");
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— Role (volitelná) —</option>' +
+      roles.map(r => `<option value="${r.id}">${r.name}</option>`).join("");
+    if (prev) sel.value = prev;
+  }
+
+  document.getElementById("sppAddRoleButton")?.addEventListener("click", async () => {
+    const roles = await sppGetRoles();
+    const name = `Role ${roles.length + 1}`;
+    roles.push({ id: String(Date.now()), name, permissions: {}, sections: [] });
+    await sppSaveRoles(roles);
+    sppRenderRoles(roles);
+    sppPopulateRoleDropdown(roles);
+  });
+
+  // ── Import role from existing employee/client ───────────────────────────────
+
+  document.getElementById("sppImportRoleButton")?.addEventListener("click", async () => {
+    const empSel = document.getElementById("sppImportEmpSelect");
+    const cliSel = document.getElementById("sppImportCliSelect");
+    const nameInput = document.getElementById("sppImportRoleName");
+    const statusEl = document.getElementById("sppImportStatus");
+    const debugRow = document.getElementById("sppImportDebugRow");
+    const debugArea = document.getElementById("sppImportDebugArea");
+
+    const employeeId = empSel?.value;
+    const clientId   = cliSel?.value;
+    if (!employeeId || !clientId) {
+      if (statusEl) statusEl.textContent = "Vyber zaměstnance a klienta.";
+      return;
+    }
+
+    if (statusEl) statusEl.textContent = "Načítám oprávnění…";
+
+    let res;
+    try {
+      res = await chrome.runtime.sendMessage({
+        type: "GET_SPP_EMPLOYEE_PERMISSIONS",
+        employeeId,
+        clientId,
+        sections: [],
+      });
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Chyba: " + e.message;
+      return;
+    }
+
+    if (!res?.success) {
+      if (statusEl) statusEl.textContent = "Chyba: " + (res?.error || "Neznámá chyba");
+      return;
+    }
+
+    // Parse allToolsDebug: "[Category] Tool=Level" → build sections + permissions
+    const catMap = new Map();
+    const permissions = {};
+    for (const entry of (res.allToolsDebug || [])) {
+      const m = /^\[(.+?)\]\s+(.+?)=(\w+)$/.exec(entry);
+      if (!m) continue;
+      const [, cat, tool, level] = m;
+      const catId  = "s_" + cat.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      const toolId = "t_" + tool.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      const key = `${catId}.${toolId}`;
+      if (!catMap.has(catId)) catMap.set(catId, { id: catId, label: cat, items: [] });
+      const sect = catMap.get(catId);
+      if (!sect.items.find(i => i.id === toolId)) sect.items.push({ id: toolId, label: tool });
+      if (level && level !== "None") permissions[key] = level;
+    }
+    const sections = [...catMap.values()];
+
+    const empName = empSel.options[empSel.selectedIndex]?.textContent || "";
+    const cliName = cliSel.options[cliSel.selectedIndex]?.textContent || "";
+    const roleName = nameInput?.value?.trim() || `${empName} → ${cliName}`;
+
+    const roles = await sppGetRoles();
+    roles.push({ id: String(Date.now()), name: roleName, permissions, sections });
+    await sppSaveRoles(roles);
+    sppRenderRoles(roles);
+    sppPopulateRoleDropdown(roles);
+
+    if (nameInput) nameInput.value = "";
+    if (statusEl) statusEl.textContent = `✓ Role „${roleName}" uložena (${Object.keys(permissions).length} oprávnění).`;
+
+    if (debugArea && res.allToolsDebug?.length) {
+      debugArea.value = res.allToolsDebug.join("\n");
+      if (debugRow) debugRow.style.display = "block";
+    }
+    if (res.unmatched?.length && statusEl) {
+      statusEl.textContent += ` (${res.unmatched.length} nespárovaných)`;
+    }
+  });
+
+  // ── Load Data ───────────────────────────────────────────────────────────────
+
+  document.getElementById("sppLoadDataButton")?.addEventListener("click", async () => {
+    const statusEl = document.getElementById("sppLoadStatus");
+    if (statusEl) statusEl.textContent = "Načítám data ze SPP portálu…";
+
+    let res;
+    try {
+      res = await chrome.runtime.sendMessage({ type: "GET_SPP_DATA" });
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Chyba: " + e.message;
+      return;
+    }
+
+    if (!res?.success) {
+      if (statusEl) statusEl.textContent = "Chyba: " + (res?.error || "Neznámá chyba");
+      return;
+    }
+
+    sppEmployees = res.employees || [];
+    sppClients   = res.clients   || [];
+
+    // Populate employee dropdowns
+    const empOpt = sppEmployees.map(e => `<option value="${e.id}">${e.name}</option>`).join("");
+    const empSelAssign  = document.getElementById("sppAssignEmpSelect");
+    const empSelImport  = document.getElementById("sppImportEmpSelect");
+    if (empSelAssign) empSelAssign.innerHTML  = '<option value="">— Zaměstnanec —</option>' + empOpt;
+    if (empSelImport) empSelImport.innerHTML  = '<option value="">— Zaměstnanec —</option>' + empOpt;
+
+    // Populate client dropdown for import
+    const cliSelImport = document.getElementById("sppImportCliSelect");
+    if (cliSelImport) cliSelImport.innerHTML =
+      '<option value="">— Klient —</option>' +
+      sppClients.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
+
+    sppRenderClientList(sppClients);
+
+    if (statusEl) statusEl.textContent = `✓ Načteno: ${sppEmployees.length} zaměstnanců, ${sppClients.length} klientů.`;
+
+    await sppLoadRoles();
+  });
+
+  // ── Client list (checkboxes + search + select all) ──────────────────────────
+
+  function sppRenderClientList(clients) {
+    const listEl = document.getElementById("sppClientList");
+    if (!listEl) return;
+    if (!clients.length) {
+      listEl.innerHTML = '<span style="color:#9CA3AF;font-size:11px;">Žádní klienti.</span>';
+      return;
+    }
+    listEl.innerHTML = clients.map(c => `
+      <label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;font-size:12px;">
+        <input type="checkbox" class="spp-cli-cb" data-id="${c.id}" data-name="${c.name.replace(/"/g, '&quot;')}" style="cursor:pointer;">
+        <span>${c.name}</span>
+      </label>`).join("");
+    listEl.addEventListener("change", sppUpdateSelectAll);
+  }
+
+  function sppUpdateSelectAll() {
+    const all  = [...document.querySelectorAll(".spp-cli-cb")];
+    const vis  = all.filter(cb => cb.closest("label")?.style.display !== "none");
+    const chk  = vis.filter(cb => cb.checked);
+    const saEl = document.getElementById("sppCliSelectAll");
+    if (!saEl) return;
+    saEl.checked       = vis.length > 0 && chk.length === vis.length;
+    saEl.indeterminate = chk.length > 0 && chk.length < vis.length;
+  }
+
+  document.getElementById("sppCliSelectAll")?.addEventListener("change", (e) => {
+    const vis = [...document.querySelectorAll(".spp-cli-cb")]
+      .filter(cb => cb.closest("label")?.style.display !== "none");
+    vis.forEach(cb => { cb.checked = e.target.checked; });
+  });
+
+  document.getElementById("sppClientSearch")?.addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll(".spp-cli-cb").forEach(cb => {
+      const lbl = cb.closest("label");
+      if (!lbl) return;
+      lbl.style.display = !q || cb.dataset.name.toLowerCase().includes(q) ? "" : "none";
+    });
+    sppUpdateSelectAll();
+  });
+
+  // ── Assign ──────────────────────────────────────────────────────────────────
+
+  document.getElementById("sppAssignButton")?.addEventListener("click", async () => {
+    const statusEl    = document.getElementById("sppLoadStatus");
+    const empSel      = document.getElementById("sppAssignEmpSelect");
+    const roleSel     = document.getElementById("sppAssignRoleSelect");
+    const assignBtn   = document.getElementById("sppAssignButton");
+    const stopBtn     = document.getElementById("sppAssignStopButton");
+
+    const empId = empSel?.value;
+    if (!empId) { if (statusEl) statusEl.textContent = "Vyber zaměstnance."; return; }
+
+    const selectedClients = [...document.querySelectorAll(".spp-cli-cb:checked")]
+      .map(cb => ({ id: cb.dataset.id, name: cb.dataset.name }));
+    if (!selectedClients.length) { if (statusEl) statusEl.textContent = "Vyber alespoň jednoho klienta."; return; }
+
+    const emp = sppEmployees.find(e => e.id === empId);
+    if (!emp) { if (statusEl) statusEl.textContent = "Zaměstnanec nenalezen — načti data znovu."; return; }
+
+    let rolePermissions = null;
+    let roleSections = null;
+    const roleId = roleSel?.value;
+    if (roleId) {
+      const roles = await sppGetRoles();
+      const role = roles.find(r => r.id === roleId);
+      if (role) { rolePermissions = role.permissions; roleSections = role.sections; }
+    }
+
+    if (assignBtn) assignBtn.style.display = "none";
+    if (stopBtn)   stopBtn.style.display   = "";
+    sppStartProgressPolling();
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: "SPP_ASSIGN",
+        employees: [emp],
+        clients: selectedClients,
+        rolePermissions,
+        roleSections,
+      });
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Chyba: " + e.message;
+    }
+
+    sppStopProgressPolling();
+    if (assignBtn) assignBtn.style.display = "";
+    if (stopBtn)   stopBtn.style.display   = "none";
+
+    const dlBtn = document.getElementById("sppAssignDownloadLog");
+    if (dlBtn) dlBtn.style.display = "";
+  });
+
+  document.getElementById("sppAssignStopButton")?.addEventListener("click", async () => {
+    await chrome.runtime.sendMessage({ type: "SPP_ASSIGN_STOP" }).catch(() => {});
+  });
+
+  // ── Progress polling ────────────────────────────────────────────────────────
+
+  function sppStartProgressPolling() {
+    const barEl  = document.getElementById("sppAssignProgressBar");
+    const fillEl = document.getElementById("sppAssignProgressFill");
+    const textEl = document.getElementById("sppAssignProgressText");
+    const errEl  = document.getElementById("sppAssignErrors");
+    if (barEl) barEl.style.display = "";
+
+    sppProgressInterval = setInterval(async () => {
+      const s = await chrome.storage.local.get(SPP_ASSIGN_PROGRESS_KEY);
+      const p = s[SPP_ASSIGN_PROGRESS_KEY];
+      if (!p) return;
+
+      const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+      if (fillEl) fillEl.style.width = pct + "%";
+      if (textEl) textEl.textContent = p.message || "";
+
+      if (errEl) {
+        if (p.errors?.length) {
+          errEl.style.display = "";
+          errEl.innerHTML = p.errors.map(e =>
+            `<div>⚠ ${e.employee || "?"}: ${e.error}</div>`).join("");
+        } else {
+          errEl.style.display = "none";
+        }
+      }
+
+      if (!p.active) sppStopProgressPolling();
+    }, 800);
+  }
+
+  function sppStopProgressPolling() {
+    if (sppProgressInterval) { clearInterval(sppProgressInterval); sppProgressInterval = null; }
+  }
+
+  // ── Download log ────────────────────────────────────────────────────────────
+
+  document.getElementById("sppAssignDownloadLog")?.addEventListener("click", async () => {
+    const s = await chrome.storage.local.get(SPP_ASSIGN_LOG_KEY);
+    const log = s[SPP_ASSIGN_LOG_KEY];
+    if (!log?.entries?.length) return;
+
+    const lines = [`# SPP Assign Log — ${log.startedAt || "?"}\n`];
+    for (const e of log.entries) {
+      if (e.action === "summary") {
+        lines.push(`\n## Shrnutí\n${e.result}`);
+      } else {
+        const detail = e.detail ? ` — ${e.detail}` : "";
+        const client = e.client ? ` / ${e.client}` : "";
+        lines.push(`- [${e.ts}] **${e.employee}**${client} → ${e.action}: ${e.result}${detail}`);
+      }
+    }
+
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url;
+    a.download = `spp-assign-log-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  void sppLoadRoles();
+
 })();

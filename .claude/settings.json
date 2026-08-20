@@ -8,6 +8,11 @@
             "type": "command",
             "command": "node -e 'const {execSync}=require(\"child_process\"); const stat=execSync(\"git diff --stat HEAD\",{encoding:\"utf8\",stdio:[\"pipe\",\"pipe\",\"pipe\"]}).trim(); if(!stat)process.exit(0); const last=stat.split(\"\\n\").pop(); const nums=last.match(/\\d+/g)||[]; const total=nums.slice(1).reduce((s,n)=>s+parseInt(n),0); const files=parseInt(nums[0])||0; const out={hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:\"Git zmeny oproti HEAD:\\n\"+stat.split(\"\\n\").slice(-4).join(\"\\n\")}}; if(total>100||files>4)out.systemMessage=\"Vetsi zmena: \"+total+\" radku v \"+files+\" souborech — zvaz commit!\"; console.log(JSON.stringify(out));' 2>/dev/null || true",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node scripts/reload.js 2>/dev/null || true",
+            "timeout": 5
           }
         ]
       }

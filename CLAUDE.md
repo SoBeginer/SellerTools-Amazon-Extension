@@ -7,6 +7,10 @@
 3. **Před smazáním nebo přepsáním kódu** — přečíst okolní kontext (minimálně 50 řádků před a po), aby bylo jasné co existující kód dělá a co se musí zachovat.
 4. **Funkční části kódu neměnit** bez přímého pokynu — pokud opravuji funkci X, nesmím přepsat funkci Y která s ní sousedí.
 5. **Při nejistotě** — raději se zeptat než přepsat.
+6. **Synchronizace URL guardů** — při přidání nové domény do scope extension prohledat a aktualizovat **všechna** místa s URL guardy: `canInjectIntoTab()` v popup.js, `onSC` check v popup.js, `loadAccountData` guard v popup.js, `GET_ACCOUNT_LIST` handler v background.js, `isAmazon` v content.js. Příkaz: `grep -n "sellercentral\.amazon\|canInjectInto\|isAmazon"` přes všechny soubory.
+7. **Wire-up kontrola po přidání UI** — každý nový `<button id="xyz">` v popup.html musí mít odpovídající `getElementById("xyz").addEventListener(...)` v popup.js. Před uzavřením tasku ověřit že propojení existuje.
+8. **Background domain fallback** — handlery v background.js co extrahují doménu z aktivního tabu musí mít fallback pro non-SC Amazon domény (SPP, apod.). Vzor: `const domain = /sellercentral\.amazon\./.test(activeTab?.url) ? new URL(activeTab.url).hostname : "sellercentral.amazon.de";`
+9. **Test scope = funkce + její calleři** — při opravě bugu otestovat nejen opravenou funkci ale i všechny místa která ji volají (popup.js → background.js → content.js chain).
 
 ---
 
@@ -65,6 +69,9 @@ Každý skill má sekci `## Sibling Skills in This Project`, která popisuje, kd
 - Pokud test selže, automaticky oprav kód a otestuj znovu
 - Testujeme na `sellercentral.amazon.de` s Work Chrome profilem
 - Extension ID: `bbkhmcbnddmogfbgpfeedmmpmipafmef`
+- **Chrome profil:** `Profile 2` (název "EXPANDO") — identický profil jako normální práce, jen spuštěný s `--remote-debugging-port=9222`
+- **Dev spuštění:** `scripts/launch-chrome.bat` nebo shortcut "Chrome EXPANDO [DEV]" na taskbaru
+- **Auto-reload:** PostToolUse hook v `.claude/settings.json` volá `node scripts/reload.js` po každém Edit/Write → extension se reloadne automaticky (~200ms). Vyžaduje Chrome spuštěný přes dev shortcut.
 
 ---
 
