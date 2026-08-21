@@ -3443,6 +3443,17 @@
     async function openOverlay() {
       if (overlayEl) { closeOverlay(); return; }
 
+      let activeTab = "markets";
+      let marketData = null;
+      let fetchError = null;
+      let bookmarks = [];
+      let cases = [];
+      let openInNewTab = false;
+      let filterBkBySeller = false;
+      let filterCaseBySeller = true;
+      let hiddenSet = new Set();
+      let currentAccountLabel = null;
+
       overlayEl = document.createElement("div");
       overlayEl.id = "__qms_overlay__";
       Object.assign(overlayEl.style, {
@@ -3456,68 +3467,489 @@
       Object.assign(box.style, {
         background: "#fff", borderRadius: "12px",
         boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
-        width: "360px", maxHeight: "520px",
+        width: "380px", maxHeight: "520px",
         display: "flex", flexDirection: "column", overflow: "hidden",
       });
 
-      const header = document.createElement("div");
-      Object.assign(header.style, {
-        padding: "16px", borderBottom: "1px solid #e5e7eb", flexShrink: "0",
+      // ── Tab bar ──────────────────────────────────────────────────────────────
+      const tabBar = document.createElement("div");
+      Object.assign(tabBar.style, {
+        display: "flex", borderBottom: "1px solid #e5e7eb", flexShrink: "0",
       });
-      const title = document.createElement("div");
-      title.textContent = "Switch Market";
-      Object.assign(title.style, {
-        fontSize: "15px", fontWeight: "700", color: "#111827", marginBottom: "10px",
-      });
+
+      function makeTabBtn(label, tabId) {
+        const btn = document.createElement("button");
+        btn.textContent = label;
+        btn.dataset.tab = tabId;
+        Object.assign(btn.style, {
+          flex: "1", padding: "12px 16px", border: "none", background: "none",
+          fontSize: "13px", fontWeight: "400", cursor: "pointer", color: "#6b7280",
+          borderBottom: "2px solid transparent", fontFamily: "inherit",
+        });
+        btn.addEventListener("click", () => setActiveTab(tabId));
+        return btn;
+      }
+      const mkTab = makeTabBtn("🌍 Markets", "markets");
+      const bkTab = makeTabBtn("🔖 Bookmarks", "bookmarks");
+      const csTab = makeTabBtn("📋 Cases", "cases");
+      tabBar.appendChild(mkTab);
+      tabBar.appendChild(bkTab);
+      tabBar.appendChild(csTab);
+
+      // ── Search ───────────────────────────────────────────────────────────────
+      const searchWrap = document.createElement("div");
+      Object.assign(searchWrap.style, { padding: "10px 14px", borderBottom: "1px solid #e5e7eb", flexShrink: "0" });
       const searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.placeholder = "Search country…";
       Object.assign(searchInput.style, {
         width: "100%", boxSizing: "border-box",
-        padding: "8px 12px", border: "1px solid #d1d5db",
-        borderRadius: "8px", fontSize: "14px", outline: "none", color: "#111827",
+        padding: "7px 11px", border: "1px solid #d1d5db",
+        borderRadius: "7px", fontSize: "13px", outline: "none", color: "#111827",
       });
-      header.appendChild(title);
-      header.appendChild(searchInput);
+      searchWrap.appendChild(searchInput);
 
       const listEl = document.createElement("div");
       Object.assign(listEl.style, { flex: "1", overflowY: "auto" });
 
-      const loadingEl = document.createElement("div");
-      loadingEl.textContent = "Loading markets…";
-      Object.assign(loadingEl.style, {
-        padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px",
-      });
-      listEl.appendChild(loadingEl);
-
       const footer = document.createElement("div");
       Object.assign(footer.style, {
-        padding: "8px 16px", fontSize: "11px", color: "#9ca3af",
-        borderTop: "1px solid #e5e7eb", textAlign: "center", flexShrink: "0",
-        display: "flex", alignItems: "center", justifyContent: "center", gap: "4px",
+        padding: "8px 14px", fontSize: "11px", color: "#9ca3af",
+        borderTop: "1px solid #e5e7eb", flexShrink: "0",
+        display: "flex", alignItems: "center", gap: "6px",
       });
-      footer.appendChild(document.createTextNode("↑↓ Navigate · Enter Select · Esc Close · "));
-      const settingsLink = document.createElement("span");
-      settingsLink.textContent = "⚙ Settings";
-      settingsLink.style.cssText = "cursor:pointer;text-decoration:underline;color:#9ca3af;";
-      settingsLink.addEventListener("click", () => {
-        closeOverlay();
-        chrome.runtime.sendMessage({ type: "OPEN_OPTIONS_PAGE" }).catch(() => {});
-      });
-      footer.appendChild(settingsLink);
 
-      box.appendChild(header);
+      box.appendChild(tabBar);
+      box.appendChild(searchWrap);
       box.appendChild(listEl);
       box.appendChild(footer);
       overlayEl.appendChild(box);
       document.body.appendChild(overlayEl);
-      searchInput.focus();
-
       overlayEl.addEventListener("click", (e) => { if (e.target === overlayEl) closeOverlay(); });
 
+      // ── Render: Markets ───────────────────────────────────────────────────────
+      function renderMarkets() {
+        listEl.innerHTML = "";
+        focusedIdx = -1;
+
+        if (!marketData) {
+          const msg = document.createElement("div");
+          msg.textContent = fetchError ? `Could not load markets: ${fetchError}` : "Loading markets…";
+          Object.assign(msg.style, { padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px" });
+          listEl.appendChild(msg);
+          return;
+        }
+
+        if (!marketData.standaloneRegionalAccounts?.length) {
+          const msg = document.createElement("div");
+          msg.textContent = "No markets found. Open the extension market selector first.";
+          Object.assign(msg.style, { padding: "24px 20px", textAlign: "center", color: "#6b7280", fontSize: "12px", lineHeight: "1.5" });
+          listEl.appendChild(msg);
+          return;
+        }
+
+        const q = searchInput.value.toLowerCase();
+        const currentMkid = marketData.current?.regionalAccount?.ids?.mons_sel_mkid;
+        const displayMarkets = marketData.standaloneRegionalAccounts.filter(
+          m => !hiddenSet.has(m.ids?.mons_sel_mkid) && (m.label || "").toLowerCase().includes(q)
+        );
+
+        if (displayMarkets.length === 0) {
+          const msg = document.createElement("div");
+          msg.textContent = q ? "No results." : "All markets are hidden. Configure in Settings.";
+          Object.assign(msg.style, { padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px" });
+          listEl.appendChild(msg);
+          return;
+        }
+
+        displayMarkets.forEach((market) => {
+          const mkid = market.ids?.mons_sel_mkid;
+          const isActive = mkid === currentMkid;
+          const item = document.createElement("div");
+          item.setAttribute("data-qms-item", "");
+          item.setAttribute("data-label", market.label || "");
+          Object.assign(item.style, {
+            display: "flex", alignItems: "center", gap: "10px",
+            padding: "10px 14px", cursor: isActive ? "default" : "pointer",
+            borderBottom: "1px solid #f3f4f6",
+            background: isActive ? "#eff6ff" : "",
+          });
+          const flagSpan = document.createElement("span");
+          flagSpan.textContent = getFlag(market.label || "");
+          flagSpan.style.cssText = "font-size:20px;flex-shrink:0;";
+          const nameSpan = document.createElement("span");
+          nameSpan.textContent = market.label || "Unknown";
+          Object.assign(nameSpan.style, {
+            fontSize: "14px", color: "#111827", flex: "1",
+            fontWeight: isActive ? "600" : "400",
+          });
+          item.appendChild(flagSpan);
+          item.appendChild(nameSpan);
+          if (isActive) {
+            const badge = document.createElement("span");
+            badge.textContent = "active";
+            Object.assign(badge.style, {
+              fontSize: "10px", color: "#3B82F6", background: "#dbeafe",
+              borderRadius: "4px", padding: "2px 6px", fontWeight: "600", flexShrink: "0",
+            });
+            item.appendChild(badge);
+          } else {
+            item.addEventListener("mouseenter", () => { item.style.background = "#f9fafb"; });
+            item.addEventListener("mouseleave", () => { item.style.background = ""; });
+            item.addEventListener("click", async () => {
+              const sellerName = marketData.current?.globalAccount?.label
+                || marketData.current?.parentGlobalAccount?.label || null;
+              const marketLabel = market.label || null;
+              if (sellerName || marketLabel) {
+                await new Promise(r => chrome.storage.local.set({
+                  _pendingAccountSwitch: { sellerName, marketLabel, ts: Date.now() }
+                }, r));
+              }
+              closeOverlay();
+              window.location.href = buildSwitchUrl(market);
+            });
+          }
+          listEl.appendChild(item);
+        });
+        updateFocus(getVisibleItems());
+      }
+
+      // ── Render: Bookmarks ─────────────────────────────────────────────────────
+      function renderBookmarks() {
+        listEl.innerHTML = "";
+        focusedIdx = -1;
+
+        const q = searchInput.value.toLowerCase();
+        const filtered = bookmarks.filter(b => {
+          const accountMatch = !filterBkBySeller || !b.accountLabel || !currentAccountLabel || b.accountLabel === currentAccountLabel;
+          const textMatch = (b.name || "").toLowerCase().includes(q) || (b.url || "").toLowerCase().includes(q);
+          return accountMatch && textMatch;
+        });
+
+        if (filtered.length === 0) {
+          const msg = document.createElement("div");
+          msg.textContent = q ? "No bookmarks match your search." : "No bookmarks yet. Click + Save to add the current page.";
+          Object.assign(msg.style, { padding: "32px 20px", textAlign: "center", color: "#6b7280", fontSize: "13px", lineHeight: "1.5" });
+          listEl.appendChild(msg);
+          return;
+        }
+
+        filtered.forEach((bookmark) => {
+          const item = document.createElement("div");
+          item.setAttribute("data-qms-item", "");
+          item.setAttribute("data-label", bookmark.name || "");
+          Object.assign(item.style, {
+            display: "flex", alignItems: "center", gap: "8px",
+            padding: "9px 14px", cursor: "pointer", borderBottom: "1px solid #f3f4f6",
+          });
+
+          const nameCol = document.createElement("div");
+          Object.assign(nameCol.style, { flex: "1", minWidth: "0" });
+          const nameSpan = document.createElement("div");
+          nameSpan.textContent = bookmark.name || "Unnamed";
+          Object.assign(nameSpan.style, {
+            fontSize: "13px", color: "#111827", fontWeight: "500",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          });
+          const urlSpan = document.createElement("div");
+          let urlDisplay = "";
+          try { urlDisplay = new URL(bookmark.url).pathname; } catch { urlDisplay = bookmark.url || ""; }
+          urlSpan.textContent = urlDisplay.length > 48 ? urlDisplay.slice(0, 48) + "…" : urlDisplay;
+          Object.assign(urlSpan.style, {
+            fontSize: "11px", color: "#9ca3af", overflow: "hidden",
+            textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "1px",
+          });
+          nameCol.appendChild(nameSpan);
+          nameCol.appendChild(urlSpan);
+
+          const trashBtn = document.createElement("button");
+          trashBtn.textContent = "🗑";
+          Object.assign(trashBtn.style, {
+            background: "none", border: "none", cursor: "pointer", padding: "4px 6px",
+            fontSize: "14px", color: "#d1d5db", flexShrink: "0", borderRadius: "4px", lineHeight: "1",
+          });
+          trashBtn.addEventListener("mouseenter", () => { trashBtn.style.color = "#ef4444"; trashBtn.style.background = "#fef2f2"; });
+          trashBtn.addEventListener("mouseleave", () => { trashBtn.style.color = "#d1d5db"; trashBtn.style.background = "none"; });
+          trashBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            bookmarks = bookmarks.filter(b => b.id !== bookmark.id);
+            await new Promise(r => chrome.storage.sync.set({ sc_bookmarks_v1: bookmarks }, r));
+            renderBookmarks();
+          });
+
+          item.appendChild(nameCol);
+          item.appendChild(trashBtn);
+          item.addEventListener("mouseenter", () => { item.style.background = "#f9fafb"; });
+          item.addEventListener("mouseleave", () => { item.style.background = ""; });
+          item.addEventListener("click", () => {
+            if (openInNewTab) { window.open(bookmark.url, "_blank"); } else { window.location.href = bookmark.url; }
+            closeOverlay();
+          });
+          listEl.appendChild(item);
+        });
+        updateFocus(getVisibleItems());
+      }
+
+      // ── Inline add-bookmark form ──────────────────────────────────────────────
+      function showAddForm() {
+        if (listEl.querySelector("[data-qms-add-form]")) return;
+
+        const formDiv = document.createElement("div");
+        formDiv.setAttribute("data-qms-add-form", "");
+        Object.assign(formDiv.style, {
+          display: "flex", alignItems: "center", gap: "6px",
+          padding: "10px 14px", borderBottom: "1px solid #e5e7eb", background: "#f8faff",
+        });
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.value = document.title.replace(/[–\-]?\s*(Seller Central|Amazon)\s*$/, "").trim().slice(0, 60);
+        nameInput.placeholder = "Bookmark name…";
+        Object.assign(nameInput.style, {
+          flex: "1", padding: "5px 9px", border: "1px solid #3b82f6",
+          borderRadius: "6px", fontSize: "13px", outline: "none", color: "#111827",
+        });
+        const saveBtn = document.createElement("button");
+        saveBtn.textContent = "Save";
+        Object.assign(saveBtn.style, {
+          padding: "5px 12px", background: "#3b82f6", color: "#fff",
+          border: "none", borderRadius: "6px", fontSize: "12px",
+          cursor: "pointer", fontFamily: "inherit", flexShrink: "0",
+        });
+        async function doSave() {
+          const name = nameInput.value.trim();
+          if (!name) { nameInput.focus(); return; }
+          const newBk = { id: String(Date.now()), name, url: window.location.href, createdAt: Date.now(), accountLabel: currentAccountLabel || undefined };
+          bookmarks = [newBk, ...bookmarks];
+          await new Promise(r => chrome.storage.sync.set({ sc_bookmarks_v1: bookmarks }, r));
+          renderBookmarks();
+        }
+        saveBtn.addEventListener("click", doSave);
+        nameInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); doSave(); }
+          if (e.key === "Escape") { e.preventDefault(); renderBookmarks(); }
+          e.stopPropagation();
+        });
+        formDiv.appendChild(nameInput);
+        formDiv.appendChild(saveBtn);
+        listEl.prepend(formDiv);
+        nameInput.select();
+        nameInput.focus();
+      }
+
+      // ── Render: Cases ─────────────────────────────────────────────────────────
+      function renderCases() {
+        listEl.innerHTML = "";
+        focusedIdx = -1;
+
+        const q = searchInput.value.toLowerCase();
+        const filtered = cases.filter(c => {
+          const accountMatch = !filterCaseBySeller || !c.accountLabel || !currentAccountLabel || c.accountLabel === currentAccountLabel;
+          const textMatch = (c.caseId || "").includes(q) || (c.note || "").toLowerCase().includes(q);
+          return accountMatch && textMatch;
+        });
+
+        if (filtered.length === 0) {
+          const msg = document.createElement("div");
+          msg.textContent = q ? "No cases match your search." : "No saved cases. Navigate to a case page and click + Save.";
+          Object.assign(msg.style, { padding: "32px 20px", textAlign: "center", color: "#6b7280", fontSize: "13px", lineHeight: "1.5" });
+          listEl.appendChild(msg);
+          return;
+        }
+
+        filtered.forEach((c) => {
+          const item = document.createElement("div");
+          item.setAttribute("data-qms-item", "");
+          item.setAttribute("data-label", c.caseId || "");
+          Object.assign(item.style, {
+            display: "flex", alignItems: "center", gap: "8px",
+            padding: "9px 14px", cursor: "pointer", borderBottom: "1px solid #f3f4f6",
+          });
+
+          const nameCol = document.createElement("div");
+          Object.assign(nameCol.style, { flex: "1", minWidth: "0" });
+
+          const caseRow = document.createElement("div");
+          Object.assign(caseRow.style, { display: "flex", alignItems: "baseline", gap: "6px" });
+          const caseIdSpan = document.createElement("span");
+          caseIdSpan.textContent = `Case #${c.caseId}`;
+          Object.assign(caseIdSpan.style, { fontSize: "13px", color: "#111827", fontWeight: "600" });
+          caseRow.appendChild(caseIdSpan);
+          if (c.note) {
+            const noteSpan = document.createElement("span");
+            noteSpan.textContent = c.note;
+            Object.assign(noteSpan.style, { fontSize: "12px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+            caseRow.appendChild(noteSpan);
+          }
+
+          const metaRow = document.createElement("div");
+          const parts = [];
+          if (c.accountLabel) parts.push(c.accountLabel);
+          if (c.marketLabel) parts.push(c.marketLabel);
+          const d = new Date(c.savedAt || 0);
+          parts.push(`${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`);
+          metaRow.textContent = parts.join(" · ");
+          Object.assign(metaRow.style, { fontSize: "11px", color: "#9ca3af", marginTop: "2px" });
+
+          nameCol.appendChild(caseRow);
+          nameCol.appendChild(metaRow);
+
+          const trashBtn = document.createElement("button");
+          trashBtn.textContent = "🗑";
+          Object.assign(trashBtn.style, {
+            background: "none", border: "none", cursor: "pointer", padding: "4px 6px",
+            fontSize: "14px", color: "#d1d5db", flexShrink: "0", borderRadius: "4px", lineHeight: "1",
+          });
+          trashBtn.addEventListener("mouseenter", () => { trashBtn.style.color = "#ef4444"; trashBtn.style.background = "#fef2f2"; });
+          trashBtn.addEventListener("mouseleave", () => { trashBtn.style.color = "#d1d5db"; trashBtn.style.background = "none"; });
+          trashBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            cases = cases.filter(x => x.id !== c.id);
+            await new Promise(r => chrome.storage.sync.set({ sc_case_ids_v1: cases }, r));
+            renderCases();
+          });
+
+          item.appendChild(nameCol);
+          item.appendChild(trashBtn);
+          item.addEventListener("mouseenter", () => { item.style.background = "#f9fafb"; });
+          item.addEventListener("mouseleave", () => { item.style.background = ""; });
+          item.addEventListener("click", () => {
+            if (openInNewTab) { window.open(c.url, "_blank"); } else { window.location.href = c.url; }
+            closeOverlay();
+          });
+          listEl.appendChild(item);
+        });
+        updateFocus(getVisibleItems());
+      }
+
+      // ── Inline add-case form ──────────────────────────────────────────────────
+      function getCurrentCaseId() {
+        try { return new URLSearchParams(window.location.search).get("caseID") || null; } catch { return null; }
+      }
+
+      function showSaveCaseForm() {
+        if (listEl.querySelector("[data-qms-add-form]")) return;
+        const caseId = getCurrentCaseId();
+        if (!caseId) return;
+
+        const formDiv = document.createElement("div");
+        formDiv.setAttribute("data-qms-add-form", "");
+        Object.assign(formDiv.style, {
+          display: "flex", flexDirection: "column", gap: "6px",
+          padding: "10px 14px", borderBottom: "1px solid #e5e7eb", background: "#f8faff",
+        });
+        const caseLabel = document.createElement("div");
+        caseLabel.textContent = `Case #${caseId}`;
+        Object.assign(caseLabel.style, { fontSize: "12px", fontWeight: "600", color: "#3b82f6" });
+
+        const row = document.createElement("div");
+        Object.assign(row.style, { display: "flex", gap: "6px", alignItems: "center" });
+        const noteInput = document.createElement("input");
+        noteInput.type = "text";
+        noteInput.placeholder = "Optional note (e.g. Listing removed)";
+        Object.assign(noteInput.style, {
+          flex: "1", padding: "5px 9px", border: "1px solid #3b82f6",
+          borderRadius: "6px", fontSize: "13px", outline: "none", color: "#111827",
+        });
+        const saveBtn = document.createElement("button");
+        saveBtn.textContent = "Save";
+        Object.assign(saveBtn.style, {
+          padding: "5px 12px", background: "#3b82f6", color: "#fff",
+          border: "none", borderRadius: "6px", fontSize: "12px",
+          cursor: "pointer", fontFamily: "inherit", flexShrink: "0",
+        });
+        async function doSaveCase() {
+          const newCase = {
+            id: String(Date.now()), caseId,
+            note: noteInput.value.trim() || undefined,
+            url: window.location.href,
+            savedAt: Date.now(),
+            accountLabel: currentAccountLabel || undefined,
+            marketLabel: marketData?.current?.regionalAccount?.label || undefined,
+          };
+          cases = [newCase, ...cases];
+          await new Promise(r => chrome.storage.sync.set({ sc_case_ids_v1: cases }, r));
+          renderCases();
+        }
+        saveBtn.addEventListener("click", doSaveCase);
+        noteInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); doSaveCase(); }
+          if (e.key === "Escape") { e.preventDefault(); renderCases(); }
+          e.stopPropagation();
+        });
+        row.appendChild(noteInput);
+        row.appendChild(saveBtn);
+        formDiv.appendChild(caseLabel);
+        formDiv.appendChild(row);
+        listEl.prepend(formDiv);
+        noteInput.focus();
+      }
+
+      // ── Footer ────────────────────────────────────────────────────────────────
+      function updateFooter() {
+        footer.innerHTML = "";
+        const hints = document.createElement("span");
+        hints.style.cssText = "flex:1;";
+        hints.textContent = "↑↓ Navigate · Enter Select · ←→ Tab · Esc Close";
+        footer.appendChild(hints);
+        if (activeTab === "bookmarks") {
+          const addBtn = document.createElement("span");
+          addBtn.textContent = "+ Save current page";
+          Object.assign(addBtn.style, { cursor: "pointer", color: "#3b82f6", fontWeight: "600", flexShrink: "0" });
+          addBtn.addEventListener("click", showAddForm);
+          footer.appendChild(addBtn);
+        } else if (activeTab === "cases") {
+          const caseId = getCurrentCaseId();
+          if (caseId) {
+            const addBtn = document.createElement("span");
+            addBtn.textContent = `+ Save case #${caseId}`;
+            Object.assign(addBtn.style, { cursor: "pointer", color: "#3b82f6", fontWeight: "600", flexShrink: "0" });
+            addBtn.addEventListener("click", showSaveCaseForm);
+            footer.appendChild(addBtn);
+          }
+        } else {
+          const settingsLink = document.createElement("span");
+          settingsLink.textContent = "⚙ Settings";
+          settingsLink.style.cssText = "cursor:pointer;text-decoration:underline;color:#9ca3af;flex-shrink:0;";
+          settingsLink.addEventListener("click", () => {
+            closeOverlay();
+            chrome.runtime.sendMessage({ type: "OPEN_OPTIONS_PAGE" }).catch(() => {});
+          });
+          footer.appendChild(settingsLink);
+        }
+      }
+
+      // ── Tab switching ─────────────────────────────────────────────────────────
+      function setActiveTab(tab) {
+        activeTab = tab;
+        [mkTab, bkTab, csTab].forEach(btn => {
+          const isActive = btn.dataset.tab === tab;
+          btn.style.fontWeight = isActive ? "600" : "400";
+          btn.style.color = isActive ? "#111827" : "#6b7280";
+          btn.style.borderBottom = isActive ? "2px solid #3b82f6" : "2px solid transparent";
+        });
+        searchInput.value = "";
+        if (tab === "markets") searchInput.placeholder = "Search country…";
+        else if (tab === "bookmarks") searchInput.placeholder = "Search bookmarks…";
+        else searchInput.placeholder = "Search case ID or note…";
+        if (tab === "markets") renderMarkets();
+        else if (tab === "bookmarks") renderBookmarks();
+        else renderCases();
+        updateFooter();
+        searchInput.focus();
+      }
+
+      // ── Keyboard navigation ───────────────────────────────────────────────────
       searchInput.addEventListener("keydown", (e) => {
         const items = getVisibleItems();
         if (e.key === "Escape") { closeOverlay(); return; }
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          e.preventDefault();
+          const tabs = ["markets", "bookmarks", "cases"];
+          const idx = tabs.indexOf(activeTab);
+          const next = e.key === "ArrowRight" ? tabs[(idx + 1) % 3] : tabs[(idx + 2) % 3];
+          setActiveTab(next);
+          return;
+        }
         if (e.key === "ArrowDown") {
           e.preventDefault();
           focusedIdx = Math.min(focusedIdx + 1, items.length - 1);
@@ -3532,18 +3964,29 @@
       });
 
       searchInput.addEventListener("input", () => {
-        const q = searchInput.value.toLowerCase();
         focusedIdx = -1;
-        [...listEl.querySelectorAll("[data-qms-item]")].forEach((item) => {
-          const match = (item.dataset.label || "").toLowerCase().includes(q);
-          item.style.display = match ? "flex" : "none";
-        });
-        updateFocus(getVisibleItems());
+        if (activeTab === "markets") renderMarkets();
+        else if (activeTab === "bookmarks") renderBookmarks();
+        else renderCases();
       });
 
-      // Load market data — popup cache first (seller_extension_market_cache_v2), fresh fetch as fallback
-      let marketData = null;
-      let fetchError = null;
+      // ── Init: show Markets tab with loading state ──────────────────────────────
+      setActiveTab("markets");
+      searchInput.focus();
+
+      // Load settings + bookmarks + cases in parallel, then markets from cache
+      const [settings, bkResult, csResult] = await Promise.all([
+        new Promise(r => chrome.storage.local.get(["_qmsHiddenMarkets", "_qmsBookmarkNewTab", "_qmsFilterBkBySeller", "_qmsFilterCaseBySeller"], d => r(d))),
+        new Promise(r => chrome.storage.sync.get("sc_bookmarks_v1", d => r(d))),
+        new Promise(r => chrome.storage.sync.get("sc_case_ids_v1", d => r(d))),
+      ]);
+      hiddenSet = new Set(settings._qmsHiddenMarkets || []);
+      openInNewTab = settings._qmsBookmarkNewTab === true;
+      filterBkBySeller = settings._qmsFilterBkBySeller === true;
+      filterCaseBySeller = settings._qmsFilterCaseBySeller !== false; // default ON
+      bookmarks = bkResult.sc_bookmarks_v1 || [];
+      cases = csResult.sc_case_ids_v1 || [];
+
       try {
         const CACHE_KEY = "seller_extension_market_cache_v2";
         const CACHE_TTL = 30 * 60 * 1000;
@@ -3556,97 +3999,14 @@
         }
       } catch (err) {
         fetchError = err.message || String(err);
-        console.error("[SellerTools QMS] market fetch failed:", err);
+        console.error("[SellerTools] market fetch failed:", err);
       }
 
-      listEl.innerHTML = "";
-      if (!marketData || !marketData.standaloneRegionalAccounts?.length) {
-        const errDiv = document.createElement("div");
-        errDiv.textContent = fetchError
-          ? `Could not load markets: ${fetchError}`
-          : "No markets found. Open the extension market selector first.";
-        Object.assign(errDiv.style, {
-          padding: "24px 20px", textAlign: "center", color: "#6b7280", fontSize: "12px", lineHeight: "1.5",
-        });
-        listEl.appendChild(errDiv);
-        return;
-      }
-
-      const hiddenMkids = await new Promise(r =>
-        chrome.storage.local.get("_qmsHiddenMarkets", d => r(d._qmsHiddenMarkets || []))
-      );
-      const hiddenSet = new Set(hiddenMkids);
-      const currentMkid = marketData.current?.regionalAccount?.ids?.mons_sel_mkid;
-      focusedIdx = -1;
-
-      const displayMarkets = marketData.standaloneRegionalAccounts.filter(
-        m => !hiddenSet.has(m.ids?.mons_sel_mkid)
-      );
-
-      if (displayMarkets.length === 0) {
-        const msg = document.createElement("div");
-        msg.textContent = "All markets are hidden. Configure visibility in extension Settings.";
-        Object.assign(msg.style, { padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px" });
-        listEl.appendChild(msg);
-        return;
-      }
-
-      displayMarkets.forEach((market) => {
-        const mkid = market.ids?.mons_sel_mkid;
-        const isActive = mkid === currentMkid;
-
-        const item = document.createElement("div");
-        item.setAttribute("data-qms-item", "");
-        item.setAttribute("data-label", market.label || "");
-        Object.assign(item.style, {
-          display: "flex", alignItems: "center", gap: "10px",
-          padding: "10px 16px", cursor: isActive ? "default" : "pointer",
-          borderBottom: "1px solid #f3f4f6",
-          background: isActive ? "#eff6ff" : "",
-        });
-
-        const flagSpan = document.createElement("span");
-        flagSpan.textContent = getFlag(market.label || "");
-        flagSpan.style.cssText = "font-size:20px;flex-shrink:0;";
-
-        const nameSpan = document.createElement("span");
-        nameSpan.textContent = market.label || "Unknown";
-        Object.assign(nameSpan.style, {
-          fontSize: "14px", color: "#111827", flex: "1",
-          fontWeight: isActive ? "600" : "400",
-        });
-        item.appendChild(flagSpan);
-        item.appendChild(nameSpan);
-
-        if (isActive) {
-          const badge = document.createElement("span");
-          badge.textContent = "active";
-          Object.assign(badge.style, {
-            fontSize: "10px", color: "#3B82F6",
-            background: "#dbeafe", borderRadius: "4px",
-            padding: "2px 6px", fontWeight: "600", flexShrink: "0",
-          });
-          item.appendChild(badge);
-        } else {
-          item.addEventListener("mouseenter", () => { item.style.background = "#f9fafb"; });
-          item.addEventListener("mouseleave", () => { item.style.background = ""; });
-          item.addEventListener("click", async () => {
-            const sellerName = marketData.current?.globalAccount?.label
-              || marketData.current?.parentGlobalAccount?.label
-              || null;
-            const marketLabel = market.label || null;
-            if (sellerName || marketLabel) {
-              await new Promise(r => chrome.storage.local.set({
-                _pendingAccountSwitch: { sellerName, marketLabel, ts: Date.now() }
-              }, r));
-            }
-            closeOverlay();
-            window.location.href = buildSwitchUrl(market);
-          });
-        }
-
-        listEl.appendChild(item);
-      });
+      currentAccountLabel = marketData?.current?.globalAccount?.label
+        || marketData?.current?.parentGlobalAccount?.label || null;
+      if (activeTab === "markets") renderMarkets();
+      else if (activeTab === "bookmarks") renderBookmarks();
+      else renderCases();
     }
 
     function isInputFocused() {

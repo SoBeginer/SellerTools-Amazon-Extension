@@ -439,7 +439,40 @@
           all modifier keys must match exactly.
         </div>
 
-        <div class="section-title" style="margin-top:4px;margin-bottom:10px;">Visible Markets</div>
+        <div class="row">
+          <div class="row-label">
+            <span>Open bookmarks in new tab</span>
+            <small>When clicking a bookmark or case in the overlay, open it in a new tab instead of the current tab</small>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="qmsNewTabToggle" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+
+        <div class="row">
+          <div class="row-label">
+            <span>Filter bookmarks by current seller</span>
+            <small>Show only bookmarks saved for the currently active seller account</small>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="qmsBkFilterToggle" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+
+        <div class="row">
+          <div class="row-label">
+            <span>Filter cases by current seller</span>
+            <small>Show only cases saved for the currently active seller account</small>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="qmsCsFilterToggle" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+
+        <div class="section-title" style="margin-top:18px;margin-bottom:10px;">Visible Markets</div>
         <div id="qmsMarketList"></div>
       </div>
 

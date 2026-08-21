@@ -291,6 +291,36 @@
     });
   }
 
+  // ── Quick Market Switcher — seller filter toggles ────────────────────────
+  async function loadQmsFilters() {
+    const bkToggle = document.getElementById("qmsBkFilterToggle");
+    const csToggle = document.getElementById("qmsCsFilterToggle");
+    if (!bkToggle || !csToggle) return;
+    const { _qmsFilterBkBySeller, _qmsFilterCaseBySeller } = await chrome.storage.local.get(["_qmsFilterBkBySeller", "_qmsFilterCaseBySeller"]);
+    bkToggle.checked = _qmsFilterBkBySeller === true;
+    csToggle.checked = _qmsFilterCaseBySeller !== false; // default ON
+    bkToggle.addEventListener("change", async () => {
+      await chrome.storage.local.set({ _qmsFilterBkBySeller: bkToggle.checked });
+      showToast(getStrings(currentLang).msgSaved);
+    });
+    csToggle.addEventListener("change", async () => {
+      await chrome.storage.local.set({ _qmsFilterCaseBySeller: csToggle.checked });
+      showToast(getStrings(currentLang).msgSaved);
+    });
+  }
+
+  // ── Quick Market Switcher — bookmark new-tab toggle ─────────────────────
+  async function loadQmsNewTab() {
+    const toggle = document.getElementById("qmsNewTabToggle");
+    if (!toggle) return;
+    const { _qmsBookmarkNewTab } = await chrome.storage.local.get("_qmsBookmarkNewTab");
+    toggle.checked = _qmsBookmarkNewTab === true;
+    toggle.addEventListener("change", async () => {
+      await chrome.storage.local.set({ _qmsBookmarkNewTab: toggle.checked });
+      showToast(getStrings(currentLang).msgSaved);
+    });
+  }
+
   // ── Quick Market Switcher market visibility ──────────────────────────────
   const QMS_FLAGS = {
     "germany": "🇩🇪", "france": "🇫🇷", "italy": "🇮🇹", "spain": "🇪🇸",
@@ -378,5 +408,7 @@
   setVersion();
   loadSettings();
   loadQmsShortcut();
+  loadQmsNewTab();
+  loadQmsFilters();
   loadQmsMarkets();
 })();
