@@ -50,11 +50,13 @@
   const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun",
                       "Jul","Aug","Sep","Oct","Nov","Dec"];
 
-  const months       = params.months.map(Number);
-  const years        = [...new Set(params.years.map(String))]; // dedupe years
-  const docType      = params.docType      ?? "all"; // "all" | "invoice" | "creditNote"
-  const downloadMode = params.downloadMode ?? "zip"; // "individual" | "zip"
-  const includeCsv   = params.includeCsv   ?? false;
+  const months          = params.months.map(Number);
+  const years           = [...new Set(params.years.map(String))]; // dedupe years
+  const docType         = params.docType         ?? "all"; // "all" | "invoice" | "creditNote"
+  const downloadMode    = params.downloadMode    ?? "zip"; // "individual" | "zip"
+  const includeCsv      = params.includeCsv      ?? false;
+  const fulfillmentTypes = params.fulfillmentTypes ?? []; // [] = all types; ["fba","mfn","epr"] to filter
+  const markets          = params.markets          ?? []; // [] = all markets
 
   const targetLabel = years.join(", ");
   log(`Starting — targets: ${targetLabel}`);
@@ -116,6 +118,22 @@
   const fileTypeIdx = headerTexts.findIndex((h) => h.includes("file") && h.includes("type"));
   log(`File Type column index: ${fileTypeIdx}`);
 
+  // Detect marketplace and invoice-type columns
+  // Invoice type = first column or header with "document"/"invoice type"/"type" (not "file type", not "number")
+  let marketplaceIdx  = -1;
+  let invoiceTypeIdx  = -1;
+  for (let i = 0; i < headerTexts.length; i++) {
+    const h = headerTexts[i];
+    if (marketplaceIdx === -1 && (h.includes("marketplace") || h.includes("market") || h.includes("store") || (h.includes("channel") && !h.includes("sales")))) {
+      marketplaceIdx = i;
+    } else if (invoiceTypeIdx === -1 && (h.includes("document") || (h.includes("type") && !h.includes("file")) || h === "type")) {
+      invoiceTypeIdx = i;
+    }
+  }
+  // Fallback: invoice type is almost always the first column
+  if (invoiceTypeIdx === -1) invoiceTypeIdx = 0;
+  log(`Marketplace column: ${marketplaceIdx}, Invoice type column: ${invoiceTypeIdx}`);
+
   if (startDateIdx === -1 && endDateIdx === -1) {
     const fb = headerTexts.findIndex(
       (h) => h.includes("date") || h.includes("period") || h.includes("invoice date")
@@ -174,6 +192,64 @@
     return cells[fileTypeIdx]?.textContent.trim().toUpperCase() === "CSV";
   }
 
+  // ─── Market & fulfillment filter helpers ─────────────────────────────────────
+
+  // Market keywords — matches against marketplace column (format: "Amazon.fr", "Amazon.de", etc.)
+  const MARKET_KEYWORDS = {
+    "DE": ["amazon.de", "germany", "deutschland"],
+    "GB": ["amazon.co.uk", "united kingdom", "great britain"],
+    "FR": ["amazon.fr", "france"],
+    "IT": ["amazon.it", "italy", "italia"],
+    "ES": ["amazon.es", "spain", "españa", "espana"],
+    "NL": ["amazon.nl", "netherlands"],
+    "PL": ["amazon.pl", "poland", "polska"],
+    "SE": ["amazon.se", "sweden", "sverige"],
+    "IE": ["amazon.ie", "ireland"],
+    "BE": ["amazon.com.be", "belgium", "belgique", "belgie"],
+    "TR": ["amazon.com.tr", "turkey", "türkiye", "turkiye"],
+    "AE": ["amazon.ae", "united arab emirates"],
+    "SA": ["amazon.sa", "saudi arabia"],
+    "IN": ["amazon.in", "india"],
+  };
+
+  // Invoice type patterns — matched against invoice type column (first column)
+  // "Fulfillment by Amazon Tax Invoice", "FBA Tax Invoice"
+  const FBA_PATTERNS = ["fulfillment by amazon", "fulfilment by amazon", "fba"];
+  // "Merchant VAT Invoice", "Merchant VAT Credit Note"
+  const MFN_PATTERNS = ["merchant"];
+  // "EPR Pay On Behalf Service Invoice"
+  const EPR_PATTERNS = ["epr"];
+
+  function getCellText(row, colIdx) {
+    const cells = [...row.querySelectorAll("td")];
+    // prefer the dedicated column; colIdx=0 always exists so this covers the fallback too
+    return (cells[colIdx]?.textContent ?? "").trim().toLowerCase();
+  }
+
+  function rowMatchesMarket(row) {
+    if (markets.length === 0) return true;
+    const cells = [...row.querySelectorAll("td")];
+    const text = (marketplaceIdx !== -1 && cells[marketplaceIdx]
+      ? cells[marketplaceIdx].textContent
+      : cells.map((c) => c.textContent).join(" ")
+    ).trim().toLowerCase();
+    return markets.some((code) => {
+      const keywords = MARKET_KEYWORDS[code] || [code.toLowerCase()];
+      return keywords.some((k) => text.includes(k));
+    });
+  }
+
+  function rowMatchesFulfillment(row) {
+    if (fulfillmentTypes.length === 0) return true;
+    const text = getCellText(row, invoiceTypeIdx);
+    return fulfillmentTypes.some((type) => {
+      if (type === "fba") return FBA_PATTERNS.some((p) => text.includes(p));
+      if (type === "mfn") return MFN_PATTERNS.some((p) => text.includes(p));
+      if (type === "epr") return EPR_PATTERNS.some((p) => text.includes(p));
+      return false;
+    });
+  }
+
   // ─── Collect matching rows ────────────────────────────────────────────────────
 
   const allBodyRows = [...table.querySelectorAll("tbody tr")]
@@ -188,11 +264,13 @@
     if (docType === "invoice")    return !cn;
     if (docType === "creditNote") return  cn;
     return true; // "all"
-  }).filter((row) => includeCsv || !isFileTypeCsv(row));
+  }).filter((row) => includeCsv || !isFileTypeCsv(row))
+    .filter(rowMatchesMarket)
+    .filter(rowMatchesFulfillment);
 
   const invoiceCount    = matchingRows.filter((r) => !isCreditNote(r)).length;
   const creditNoteCount = matchingRows.filter((r) =>  isCreditNote(r)).length;
-  log(`Matching rows for [${targetLabel}]: ${matchingRows.length} (${invoiceCount} faktur, ${creditNoteCount} dobropisů)`);
+  log(`Matching rows for [${targetLabel}]: ${matchingRows.length} (${invoiceCount} faktur, ${creditNoteCount} dobropisů) | types=[${fulfillmentTypes.join(",")||"all"}] markets=[${markets.join(",")||"all"}]`);
 
   if (matchingRows.length === 0) {
     log("No matching invoices found.");
@@ -308,12 +386,9 @@
       const baseName = filenameFromUrl(absoluteUrl, invoiceId, ext);
 
       if (downloadMode === "zip") {
-        log(`Row ${i + 1}: fetching for ZIP — "${baseName}"…`);
-        const resp = await fetch(absoluteUrl, { credentials: "include" });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = new Uint8Array(await resp.arrayBuffer());
-        zipFiles.push({ filename: baseName, data });
-        log(`Row ${i + 1}: ✅ fetched (${data.length} bytes)`);
+        // Don't fetch here — background service worker bypasses CORS, content script doesn't
+        zipFiles.push({ url: absoluteUrl, filename: baseName });
+        log(`Row ${i + 1}: ✅ URL captured for ZIP`);
       } else {
         log(`Row ${i + 1}: ✅ "${baseName}"`);
         chrome.runtime.sendMessage({ type: "INVOICE_PDF_READY", url: absoluteUrl, filename: baseName });
@@ -332,8 +407,9 @@
 
   if (downloadMode === "zip" && zipFiles.length > 0) {
     const zipName = `Amazon_Invoices_${generateTimestamp()}.zip`;
-    log(`Sending ${zipFiles.length} file(s) to background for ZIP: "${zipName}"`);
-    chrome.runtime.sendMessage({ type: "INVOICE_ZIP_READY", files: zipFiles, zipName });
+    log(`Sending ${zipFiles.length} URL(s) to background for fetch+ZIP: "${zipName}"`);
+    // Background fetches PDFs (bypasses CORS) and assembles the ZIP
+    chrome.runtime.sendMessage({ type: "INVOICE_ZIP_FETCH", files: zipFiles, zipName });
   }
 
   // ─── Cleanup and report done ──────────────────────────────────────────────────

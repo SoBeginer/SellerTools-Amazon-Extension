@@ -2750,38 +2750,44 @@
     });
     console.log("[SellerTools] accountSelectRun: kat-input ready in", Date.now() - t0, "ms, found:", !!searchInput);
 
-    if (searchInput && sellerName) {
-      searchInput.focus();
-      searchInput.value = sellerName;
-      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
-      searchInput.dispatchEvent(new Event("change", { bubbles: true }));
-      const searchBtn = document.querySelector("kat-button.search-button");
-      if (searchBtn) searchBtn.click();
-      console.log("[SellerTools] accountSelectRun: typed seller name, search btn clicked:", !!searchBtn);
-    }
+    // Step 2: First try to find the seller in the initial DOM by expanding visible parent rows.
+    // Search is done ONLY as a fallback — Amazon's search doesn't find sub-sellers under agencies.
+    const ACCT_COUNTRIES = new Set(["afghanistan","albania","algeria","andorra","angola","argentina","armenia","australia","austria","azerbaijan","bahrain","bangladesh","belarus","belgium","belize","benin","bhutan","bolivia","brazil","brunei","bulgaria","cambodia","cameroon","canada","chile","china","colombia","congo","costa rica","croatia","cuba","cyprus","czech republic","czechia","denmark","ecuador","egypt","el salvador","estonia","ethiopia","finland","france","georgia","germany","ghana","greece","guatemala","hungary","iceland","india","indonesia","iran","iraq","ireland","israel","italy","jamaica","japan","jordan","kazakhstan","kenya","kuwait","latvia","lebanon","liechtenstein","lithuania","luxembourg","malaysia","malta","mauritius","mexico","moldova","monaco","mongolia","montenegro","morocco","nepal","netherlands","new zealand","nicaragua","nigeria","north korea","north macedonia","norway","oman","pakistan","panama","paraguay","peru","philippines","poland","portugal","qatar","romania","russia","saudi arabia","senegal","serbia","singapore","slovakia","slovenia","south africa","south korea","spain","sri lanka","sweden","switzerland","taiwan","tajikistan","tanzania","thailand","tunisia","turkey","ukraine","united arab emirates","united kingdom","united states","uruguay","uzbekistan","venezuela","vietnam","yemen","zambia","zimbabwe"]);
+    const acctIsCountry = lbl => ACCT_COUNTRIES.has(lbl.replace(/\s*\(pending\s+registration\)/i, "").trim().toLowerCase());
 
-    // Step 2: poll for seller row (up to 8s).
-    // If not found after 1.5s, click any visible collapsed parents to expand them —
-    // Amazon may show only the collapsed SPN parent without inserting sub-clients into DOM.
     const sellerBtn = sellerName ? await new Promise((resolve) => {
-      const deadline = Date.now() + 8000;
+      const deadline = Date.now() + 6000;
       const clickedParents = new Set();
       const startTs = Date.now();
+      let searchFired = false;
       const tick = () => {
         const btn = findAccountBtn(sellerName);
         if (btn) { resolve(btn); return; }
         if (Date.now() > deadline) { resolve(null); return; }
+        // After 600ms, expand visible SPN/agency rows — but SKIP country/marketplace rows,
+        // clicking those switches the market and navigates away from account switcher.
         if (Date.now() - startTs > 600) {
           [...document.querySelectorAll(".full-page-account-switcher-account-details")]
             .filter(b => {
               if (!b.offsetHeight || clickedParents.has(b)) return false;
-              // Skip the target seller — we'll click it explicitly after find; clicking it
-              // here would toggle it and the explicit click would then collapse it.
               const txt = (b.querySelector(".full-page-account-switcher-account-label")
                 ?.textContent?.trim() || "").replace(/\s*\(current\)|\s*\(selected\)/gi, "").trim();
-              return txt !== sellerName && !txt.startsWith(sellerName + " ");
+              if (txt === sellerName || txt.startsWith(sellerName + " ")) return false;
+              if (acctIsCountry(txt)) return false; // skip country/market rows
+              return true;
             })
             .forEach(b => { clickedParents.add(b); b.click(); });
+        }
+        // After 3s without finding via expansion, fall back to search
+        if (!searchFired && Date.now() - startTs > 3000 && searchInput && sellerName) {
+          searchFired = true;
+          searchInput.focus();
+          searchInput.value = sellerName;
+          searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+          searchInput.dispatchEvent(new Event("change", { bubbles: true }));
+          const searchBtn = document.querySelector("kat-button.search-button");
+          if (searchBtn) searchBtn.click();
+          console.log("[SellerTools] accountSelectRun: expansion failed, falling back to search");
         }
         setTimeout(tick, 150);
       };
@@ -3423,21 +3429,9 @@
     }
 
     let overlayEl = null;
-    let focusedIdx = -1;
 
     function closeOverlay() {
       if (overlayEl) { overlayEl.remove(); overlayEl = null; }
-    }
-
-    function getVisibleItems() {
-      return overlayEl ? [...overlayEl.querySelectorAll("[data-qms-item]:not([style*='none'])")]  : [];
-    }
-
-    function updateFocus(items) {
-      items.forEach((item, i) => {
-        item.style.background = i === focusedIdx ? "#dbeafe" : "";
-      });
-      if (items[focusedIdx]) items[focusedIdx].scrollIntoView({ block: "nearest" });
     }
 
     async function openOverlay() {
@@ -3489,9 +3483,9 @@
         btn.addEventListener("click", () => setActiveTab(tabId));
         return btn;
       }
-      const mkTab = makeTabBtn("🌍 Markets", "markets");
-      const bkTab = makeTabBtn("🔖 Bookmarks", "bookmarks");
-      const csTab = makeTabBtn("📋 Cases", "cases");
+      const mkTab = makeTabBtn("Markets", "markets");
+      const bkTab = makeTabBtn("Bookmarks", "bookmarks");
+      const csTab = makeTabBtn("Cases", "cases");
       tabBar.appendChild(mkTab);
       tabBar.appendChild(bkTab);
       tabBar.appendChild(csTab);
@@ -3510,7 +3504,7 @@
       searchWrap.appendChild(searchInput);
 
       const listEl = document.createElement("div");
-      Object.assign(listEl.style, { flex: "1", overflowY: "auto" });
+      Object.assign(listEl.style, { flex: "1", overflowY: "auto", minHeight: "0" });
 
       const footer = document.createElement("div");
       Object.assign(footer.style, {
@@ -3530,20 +3524,23 @@
       // ── Render: Markets ───────────────────────────────────────────────────────
       function renderMarkets() {
         listEl.innerHTML = "";
-        focusedIdx = -1;
 
         if (!marketData) {
           const msg = document.createElement("div");
-          msg.textContent = fetchError ? `Could not load markets: ${fetchError}` : "Loading markets…";
-          Object.assign(msg.style, { padding: "32px", textAlign: "center", color: "#6b7280", fontSize: "13px" });
+          if (fetchError) {
+            msg.innerHTML = `<div style="color:#dc2626;font-weight:600;margin-bottom:6px;">Failed to load markets</div><div style="font-size:11px;color:#9ca3af;">${fetchError}</div>`;
+          } else {
+            msg.textContent = "Loading markets…";
+          }
+          Object.assign(msg.style, { padding: "32px 20px", textAlign: "center", color: "#374151", fontSize: "13px" });
           listEl.appendChild(msg);
           return;
         }
 
         if (!marketData.standaloneRegionalAccounts?.length) {
           const msg = document.createElement("div");
-          msg.textContent = "No markets found. Open the extension market selector first.";
-          Object.assign(msg.style, { padding: "24px 20px", textAlign: "center", color: "#6b7280", fontSize: "12px", lineHeight: "1.5" });
+          msg.textContent = "No markets found. Make sure you are on a Seller Central page.";
+          Object.assign(msg.style, { padding: "24px 20px", textAlign: "center", color: "#374151", fontSize: "12px", lineHeight: "1.5" });
           listEl.appendChild(msg);
           return;
         }
@@ -3574,9 +3571,6 @@
             borderBottom: "1px solid #f3f4f6",
             background: isActive ? "#eff6ff" : "",
           });
-          const flagSpan = document.createElement("span");
-          flagSpan.textContent = getFlag(market.label || "");
-          flagSpan.style.cssText = "font-size:20px;flex-shrink:0;";
           const nameSpan = document.createElement("span");
           nameSpan.textContent = market.label || "Unknown";
           Object.assign(nameSpan.style, {
@@ -3611,13 +3605,11 @@
           }
           listEl.appendChild(item);
         });
-        updateFocus(getVisibleItems());
       }
 
       // ── Render: Bookmarks ─────────────────────────────────────────────────────
       function renderBookmarks() {
         listEl.innerHTML = "";
-        focusedIdx = -1;
 
         const q = searchInput.value.toLowerCase();
         const filtered = bookmarks.filter(b => {
@@ -3687,7 +3679,6 @@
           });
           listEl.appendChild(item);
         });
-        updateFocus(getVisibleItems());
       }
 
       // ── Inline add-bookmark form ──────────────────────────────────────────────
@@ -3739,7 +3730,6 @@
       // ── Render: Cases ─────────────────────────────────────────────────────────
       function renderCases() {
         listEl.innerHTML = "";
-        focusedIdx = -1;
 
         const q = searchInput.value.toLowerCase();
         const filtered = cases.filter(c => {
@@ -3768,30 +3758,18 @@
           const nameCol = document.createElement("div");
           Object.assign(nameCol.style, { flex: "1", minWidth: "0" });
 
-          const caseRow = document.createElement("div");
-          Object.assign(caseRow.style, { display: "flex", alignItems: "baseline", gap: "6px" });
-          const caseIdSpan = document.createElement("span");
-          caseIdSpan.textContent = `Case #${c.caseId}`;
-          Object.assign(caseIdSpan.style, { fontSize: "13px", color: "#111827", fontWeight: "600" });
-          caseRow.appendChild(caseIdSpan);
-          if (c.note) {
-            const noteSpan = document.createElement("span");
-            noteSpan.textContent = c.note;
-            Object.assign(noteSpan.style, { fontSize: "12px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
-            caseRow.appendChild(noteSpan);
-          }
+          const titleSpan = document.createElement("div");
+          titleSpan.textContent = c.note || `Case #${c.caseId}`;
+          Object.assign(titleSpan.style, { fontSize: "13px", color: "#111827", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+          nameCol.appendChild(titleSpan);
 
-          const metaRow = document.createElement("div");
-          const parts = [];
-          if (c.accountLabel) parts.push(c.accountLabel);
-          if (c.marketLabel) parts.push(c.marketLabel);
-          const d = new Date(c.savedAt || 0);
-          parts.push(`${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`);
-          metaRow.textContent = parts.join(" · ");
-          Object.assign(metaRow.style, { fontSize: "11px", color: "#9ca3af", marginTop: "2px" });
-
-          nameCol.appendChild(caseRow);
-          nameCol.appendChild(metaRow);
+          const subParts = [];
+          if (c.accountLabel) subParts.push(c.accountLabel);
+          subParts.push(`Case #${c.caseId}`);
+          const subRow = document.createElement("div");
+          subRow.textContent = subParts.join(" · ");
+          Object.assign(subRow.style, { fontSize: "11px", color: "#9ca3af", marginTop: "1px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+          nameCol.appendChild(subRow);
 
           const trashBtn = document.createElement("button");
           trashBtn.textContent = "🗑";
@@ -3812,13 +3790,35 @@
           item.appendChild(trashBtn);
           item.addEventListener("mouseenter", () => { item.style.background = "#f9fafb"; });
           item.addEventListener("mouseleave", () => { item.style.background = ""; });
-          item.addEventListener("click", () => {
-            if (openInNewTab) { window.open(c.url, "_blank"); } else { window.location.href = c.url; }
+          item.addEventListener("click", async () => {
             closeOverlay();
+            if (openInNewTab) {
+              window.open(c.url, "_blank");
+              return;
+            }
+            const needsAccountSwitch = c.accountLabel && currentAccountLabel && c.accountLabel !== currentAccountLabel;
+            if (needsAccountSwitch) {
+              // Different seller account — use the same account-switcher UI flow as the market switcher
+              await Promise.all([
+                new Promise(r => chrome.storage.local.set({ _qmsPendingCaseUrl: { url: c.url, ts: Date.now() } }, r)),
+                new Promise(r => chrome.storage.local.set({ _pendingAccountSwitch: { sellerName: c.accountLabel, marketLabel: c.marketLabel || null, ts: Date.now() } }, r)),
+              ]);
+              window.location.href = `https://${window.location.hostname}/account-switcher/default/merchantMarketplace`;
+            } else if (c.switchData?.mkid) {
+              // Same seller, different market — URL-based switch
+              await new Promise(r => chrome.storage.local.set({ _qmsPendingCaseUrl: { url: c.url, ts: Date.now() } }, r));
+              const sw = new URL(window.location.origin + "/home");
+              sw.searchParams.set("mons_sel_mkid", c.switchData.mkid);
+              sw.searchParams.set("mons_sel_dir_mcid", c.switchData.mcid || "");
+              if (c.switchData.paid) sw.searchParams.set("mons_sel_dir_paid", c.switchData.paid);
+              sw.searchParams.set("ignore_selection_changed", "true");
+              window.location.href = sw.toString();
+            } else {
+              window.location.href = c.url;
+            }
           });
           listEl.appendChild(item);
         });
-        updateFocus(getVisibleItems());
       }
 
       // ── Inline add-case form ──────────────────────────────────────────────────
@@ -3858,17 +3858,54 @@
           cursor: "pointer", fontFamily: "inherit", flexShrink: "0",
         });
         async function doSaveCase() {
+          // Always fetch fresh account context — cache may be stale after manual account switch
+          let freshLabel = currentAccountLabel;
+          let freshMarketLabel = marketData?.current?.regionalAccount?.label;
+          let switchData = {
+            mkid: marketData?.current?.regionalAccount?.ids?.mons_sel_mkid || null,
+            mcid: marketData?.current?.regionalAccount?.ids?.mons_sel_dir_mcid || null,
+            paid: marketData?.current?.globalAccount?.id || null,
+          };
+          try {
+            const ctx = await marketFetchJson("/account-switcher/global-and-regional-account/merchantMarketplace");
+            freshLabel = ctx?.globalAccount?.label || ctx?.parentGlobalAccount?.label || freshLabel;
+            freshMarketLabel = ctx?.regionalAccount?.label || freshMarketLabel;
+            switchData = {
+              mkid: ctx?.regionalAccount?.ids?.mons_sel_mkid || null,
+              mcid: ctx?.regionalAccount?.ids?.mons_sel_dir_mcid || null,
+              paid: ctx?.globalAccount?.id || null,
+            };
+            // Sync overlay's currentAccountLabel so renderCases() filter matches the saved case
+            if (freshLabel) currentAccountLabel = freshLabel;
+          } catch (e) {
+            console.warn("[QMS] doSaveCase: fresh fetch failed, using cached values", e);
+          }
           const newCase = {
             id: String(Date.now()), caseId,
             note: noteInput.value.trim() || undefined,
             url: window.location.href,
             savedAt: Date.now(),
-            accountLabel: currentAccountLabel || undefined,
-            marketLabel: marketData?.current?.regionalAccount?.label || undefined,
+            accountLabel: freshLabel || undefined,
+            marketLabel: freshMarketLabel || undefined,
+            switchData: (switchData.mkid || switchData.mcid) ? switchData : undefined,
           };
-          cases = [newCase, ...cases];
-          await new Promise(r => chrome.storage.sync.set({ sc_case_ids_v1: cases }, r));
-          renderCases();
+          const updated = [newCase, ...cases];
+          const saveErr = await new Promise(resolve => {
+            chrome.storage.sync.set({ sc_case_ids_v1: updated }, () => {
+              resolve(chrome.runtime.lastError?.message || null);
+            });
+          });
+          if (saveErr) {
+            saveBtn.textContent = "Error!";
+            saveBtn.style.background = "#dc2626";
+            setTimeout(() => { saveBtn.textContent = "Save"; saveBtn.style.background = "#3b82f6"; }, 2000);
+            console.error("[QMS] doSaveCase failed:", saveErr);
+            return;
+          }
+          cases = updated;
+          saveBtn.textContent = "Saved!";
+          saveBtn.style.background = "#16a34a";
+          setTimeout(() => renderCases(), 800);
         }
         saveBtn.addEventListener("click", doSaveCase);
         noteInput.addEventListener("keydown", (e) => {
@@ -3887,10 +3924,20 @@
       // ── Footer ────────────────────────────────────────────────────────────────
       function updateFooter() {
         footer.innerHTML = "";
-        const hints = document.createElement("span");
-        hints.style.cssText = "flex:1;";
-        hints.textContent = "↑↓ Navigate · Enter Select · ←→ Tab · Esc Close";
-        footer.appendChild(hints);
+        const settingsBtn = document.createElement("button");
+        settingsBtn.title = "Settings";
+        settingsBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+        Object.assign(settingsBtn.style, { background: "none", border: "none", cursor: "pointer", color: "#9ca3af", padding: "0", display: "inline-flex", alignItems: "center", flexShrink: "0", lineHeight: "1" });
+        settingsBtn.addEventListener("mouseenter", () => { settingsBtn.style.color = "#6b7280"; });
+        settingsBtn.addEventListener("mouseleave", () => { settingsBtn.style.color = "#9ca3af"; });
+        settingsBtn.addEventListener("click", () => {
+          closeOverlay();
+          chrome.runtime.sendMessage({ type: "OPEN_OPTIONS_PAGE" }).catch(() => {});
+        });
+        footer.appendChild(settingsBtn);
+        const spacer = document.createElement("span");
+        spacer.style.cssText = "flex:1;";
+        footer.appendChild(spacer);
         if (activeTab === "bookmarks") {
           const addBtn = document.createElement("span");
           addBtn.textContent = "+ Save current page";
@@ -3900,21 +3947,37 @@
         } else if (activeTab === "cases") {
           const caseId = getCurrentCaseId();
           if (caseId) {
-            const addBtn = document.createElement("span");
-            addBtn.textContent = `+ Save case #${caseId}`;
-            Object.assign(addBtn.style, { cursor: "pointer", color: "#3b82f6", fontWeight: "600", flexShrink: "0" });
-            addBtn.addEventListener("click", showSaveCaseForm);
-            footer.appendChild(addBtn);
+            // Only "already saved" if the case is visible in the current filtered list
+            const alreadySaved = cases.some(c => {
+              if (c.caseId !== caseId) return false;
+              const accountMatch = !filterCaseBySeller || !c.accountLabel || !currentAccountLabel || c.accountLabel === currentAccountLabel;
+              return accountMatch;
+            });
+            if (alreadySaved) {
+              const savedLabel = document.createElement("span");
+              savedLabel.textContent = "Case already saved";
+              Object.assign(savedLabel.style, { color: "#6b7280", flexShrink: "0", fontSize: "11px" });
+              const eyeBtn = document.createElement("button");
+              eyeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+              Object.assign(eyeBtn.style, { background: "none", border: "none", cursor: "pointer", color: "#9ca3af", padding: "0 0 0 6px", display: "inline-flex", alignItems: "center", flexShrink: "0", lineHeight: "1" });
+              eyeBtn.title = "Highlight in list";
+              eyeBtn.addEventListener("click", () => {
+                const item = listEl.querySelector(`[data-label="${caseId}"]`);
+                if (!item) return;
+                item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                item.style.background = "#dbeafe";
+                setTimeout(() => { item.style.background = ""; }, 1500);
+              });
+              footer.appendChild(savedLabel);
+              footer.appendChild(eyeBtn);
+            } else {
+              const addBtn = document.createElement("span");
+              addBtn.textContent = `+ Save case #${caseId}`;
+              Object.assign(addBtn.style, { cursor: "pointer", color: "#3b82f6", fontWeight: "600", flexShrink: "0" });
+              addBtn.addEventListener("click", showSaveCaseForm);
+              footer.appendChild(addBtn);
+            }
           }
-        } else {
-          const settingsLink = document.createElement("span");
-          settingsLink.textContent = "⚙ Settings";
-          settingsLink.style.cssText = "cursor:pointer;text-decoration:underline;color:#9ca3af;flex-shrink:0;";
-          settingsLink.addEventListener("click", () => {
-            closeOverlay();
-            chrome.runtime.sendMessage({ type: "OPEN_OPTIONS_PAGE" }).catch(() => {});
-          });
-          footer.appendChild(settingsLink);
         }
       }
 
@@ -3938,47 +4001,38 @@
         searchInput.focus();
       }
 
-      // ── Keyboard navigation ───────────────────────────────────────────────────
       searchInput.addEventListener("keydown", (e) => {
-        const items = getVisibleItems();
         if (e.key === "Escape") { closeOverlay(); return; }
-        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-          e.preventDefault();
-          const tabs = ["markets", "bookmarks", "cases"];
-          const idx = tabs.indexOf(activeTab);
-          const next = e.key === "ArrowRight" ? tabs[(idx + 1) % 3] : tabs[(idx + 2) % 3];
-          setActiveTab(next);
-          return;
-        }
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          focusedIdx = Math.min(focusedIdx + 1, items.length - 1);
-          updateFocus(items);
-        } else if (e.key === "ArrowUp") {
-          e.preventDefault();
-          focusedIdx = Math.max(focusedIdx - 1, 0);
-          updateFocus(items);
-        } else if (e.key === "Enter" && items[focusedIdx]) {
-          items[focusedIdx].click();
-        }
       });
 
       searchInput.addEventListener("input", () => {
-        focusedIdx = -1;
         if (activeTab === "markets") renderMarkets();
         else if (activeTab === "bookmarks") renderBookmarks();
         else renderCases();
       });
 
-      // ── Init: show Markets tab with loading state ──────────────────────────────
-      setActiveTab("markets");
+      // ── Init: determine initial tab based on current page context ──────────────
+      {
+        // Bookmarks take priority: if current URL is bookmarked, show Bookmarks
+        const bksCheck = await new Promise(r => chrome.storage.sync.get("sc_bookmarks_v1", d => r(d.sc_bookmarks_v1 || [])));
+        const isBookmarked = bksCheck.some(b => b.url === window.location.href);
+        if (isBookmarked) {
+          setActiveTab("bookmarks");
+        } else if (getCurrentCaseId()) {
+          // On a case page (not bookmarked) → open Cases tab
+          setActiveTab("cases");
+        } else {
+          setActiveTab("markets");
+        }
+      }
       searchInput.focus();
 
-      // Load settings + bookmarks + cases in parallel, then markets from cache
-      const [settings, bkResult, csResult] = await Promise.all([
+      // Load settings + bookmarks + cases + fresh account context all in parallel
+      const [settings, bkResult, csResult, freshCtx] = await Promise.all([
         new Promise(r => chrome.storage.local.get(["_qmsHiddenMarkets", "_qmsBookmarkNewTab", "_qmsFilterBkBySeller", "_qmsFilterCaseBySeller"], d => r(d))),
         new Promise(r => chrome.storage.sync.get("sc_bookmarks_v1", d => r(d))),
         new Promise(r => chrome.storage.sync.get("sc_case_ids_v1", d => r(d))),
+        marketFetchJson("/account-switcher/global-and-regional-account/merchantMarketplace").catch(() => null),
       ]);
       hiddenSet = new Set(settings._qmsHiddenMarkets || []);
       openInNewTab = settings._qmsBookmarkNewTab === true;
@@ -3987,11 +4041,19 @@
       bookmarks = bkResult.sc_bookmarks_v1 || [];
       cases = csResult.sc_case_ids_v1 || [];
 
+      // Set currentAccountLabel from fresh API response (always accurate regardless of cache)
+      currentAccountLabel = freshCtx?.globalAccount?.label || freshCtx?.parentGlobalAccount?.label || null;
+
       try {
         const CACHE_KEY = "seller_extension_market_cache_v2";
         const CACHE_TTL = 30 * 60 * 1000;
         const cached = await new Promise(r => chrome.storage.local.get(CACHE_KEY, d => r(d[CACHE_KEY])));
-        if (cached && Date.now() - (cached.cachedAt || 0) < CACHE_TTL) {
+        const freshAccountId = freshCtx?.globalAccount?.id;
+        const cacheAccountId = cached?.data?.current?.globalAccount?.id;
+        const cacheValid = cached
+          && Date.now() - (cached.cachedAt || 0) < CACHE_TTL
+          && (!freshAccountId || !cacheAccountId || freshAccountId === cacheAccountId);
+        if (cacheValid) {
           marketData = cached.data;
         } else {
           marketData = await marketFetchCurrentAccountMarkets();
@@ -4002,11 +4064,25 @@
         console.error("[SellerTools] market fetch failed:", err);
       }
 
-      currentAccountLabel = marketData?.current?.globalAccount?.label
-        || marketData?.current?.parentGlobalAccount?.label || null;
+      // Prefer fresh label; fall back to marketData if freshCtx failed
+      if (!currentAccountLabel) {
+        currentAccountLabel = marketData?.current?.globalAccount?.label
+          || marketData?.current?.parentGlobalAccount?.label || null;
+      }
       if (activeTab === "markets") renderMarkets();
       else if (activeTab === "bookmarks") renderBookmarks();
-      else renderCases();
+      else {
+        renderCases();
+        // Auto-show save form if on a case page and this case isn't saved for this account yet
+        const pageCase = getCurrentCaseId();
+        const caseAlreadySaved = pageCase && cases.some(c => {
+          if (c.caseId !== pageCase) return false;
+          return !filterCaseBySeller || !c.accountLabel || !currentAccountLabel || c.accountLabel === currentAccountLabel;
+        });
+        if (pageCase && !caseAlreadySaved) showSaveCaseForm();
+      }
+      // Re-render footer with real data (e.g. "already saved" vs "+ Save" state)
+      updateFooter();
     }
 
     function isInputFocused() {
@@ -4052,6 +4128,21 @@
   if (isAmazon) {
     void notifyBackgroundWhenReady();
     initQuickMarketSwitcher();
+
+    // After account/market switch for QMS case click: redirect to the pending case URL.
+    // Skip on account-switcher page — accountSelectRun is still running there and needs time to complete.
+    if (!window.location.href.includes("/account-switcher/")) {
+      chrome.storage.local.get("_qmsPendingCaseUrl", (data) => {
+        const pending = data._qmsPendingCaseUrl;
+        if (!pending?.url) return;
+        const age = Date.now() - (pending.ts || 0);
+        if (age > 12000) { chrome.storage.local.remove("_qmsPendingCaseUrl"); return; }
+        const pendingPath = pending.url.replace(/^https?:\/\/[^/]+/, "");
+        if (window.location.href.includes(pendingPath)) return; // already there
+        chrome.storage.local.remove("_qmsPendingCaseUrl");
+        setTimeout(() => { window.location.href = pending.url; }, 700);
+      });
+    }
   }
   void ibaRunCurrentPhase().catch((error) => {
     ibaLog("Automation failed.", error);

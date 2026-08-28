@@ -2707,8 +2707,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "INVOICE_DOWNLOADER_START") {
     (async () => {
       try {
-        const { months, years, docType = "all", downloadMode = "zip", includeCsv = false } = message;
-        const params = { months, years, docType, downloadMode, includeCsv };
+        const { months, years, docType = "all", downloadMode = "zip", includeCsv = false, fulfillmentTypes = [], markets = [] } = message;
+        const params = { months, years, docType, downloadMode, includeCsv, fulfillmentTypes, markets };
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         console.log("[BG] INVOICE_DOWNLOADER_START tab:", tab?.id, tab?.url);
         if (!tab?.id) { sendResponse({ success: false, error: "No active tab." }); return; }
@@ -2749,6 +2749,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (err) {
       console.error("[BG] ZIP build failed:", err);
     }
+  }
+
+  if (message?.type === "INVOICE_ZIP_FETCH") {
+    // Fetch PDFs from background (service worker bypasses CORS restrictions)
+    (async () => {
+      const { files, zipName } = message;
+      console.log(`[BG] INVOICE_ZIP_FETCH — fetching ${files.length} PDF(s)…`);
+      const fetched = [];
+      for (const { url, filename } of files) {
+        try {
+          const resp = await fetch(url, { credentials: "include" });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = new Uint8Array(await resp.arrayBuffer());
+          fetched.push({ filename, data });
+          console.log(`[BG] ✅ ${filename} (${data.length} bytes)`);
+        } catch (err) {
+          console.warn(`[BG] ❌ Failed to fetch "${filename}": ${err.message}`);
+        }
+      }
+      if (fetched.length > 0) {
+        try {
+          const zipData = buildZip(fetched);
+          const dataUrl = uint8ArrayToDataUrl(zipData);
+          chrome.downloads.download({ url: dataUrl, filename: zipName, conflictAction: "uniquify" });
+          console.log(`[BG] ZIP download started: "${zipName}" (${fetched.length}/${files.length} files)`);
+        } catch (err) {
+          console.error("[BG] ZIP build failed:", err);
+        }
+      }
+    })();
+    return false;
   }
 
   if (message?.type === "INVOICE_DOWNLOAD_DONE") {

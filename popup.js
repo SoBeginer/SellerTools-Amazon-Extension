@@ -2375,9 +2375,11 @@
       return;
     }
 
-    const docType      = invoiceSectionBody.querySelector(".invoice-doc-type:checked")?.value ?? "all";
-    const downloadMode = invoiceSectionBody.querySelector(".invoice-download-mode:checked")?.value ?? "zip";
-    const includeCsv   = document.getElementById("invoiceIncludeCsv")?.checked ?? false;
+    const docType         = invoiceSectionBody.querySelector(".invoice-doc-type:checked")?.value ?? "all";
+    const downloadMode    = invoiceSectionBody.querySelector(".invoice-download-mode:checked")?.value ?? "zip";
+    const includeCsv      = document.getElementById("invoiceIncludeCsv")?.checked ?? false;
+    const fulfillmentTypes = [...invoiceSectionBody.querySelectorAll(".invoice-fulfillment-type:checked")].map(cb => cb.value);
+    const markets          = [...invoiceSectionBody.querySelectorAll(".invoice-market-cb:checked")].map(cb => cb.value);
 
     // Show spinner immediately
     invoiceStatusEl.style.display = "flex";
@@ -2394,6 +2396,8 @@
         docType,
         downloadMode,
         includeCsv,
+        fulfillmentTypes,
+        markets,
       });
       if (!response?.success) {
         invoiceLbl.textContent = response?.error || "Chyba";
@@ -2948,6 +2952,11 @@
     );
     // Update year label after pre-checking current year
     updateDropdownLabel("invoiceYearBtn", "invoiceYearLabel", "invoice-year-cb", "Vyberte rok", (v) => v);
+    setupInvDropdown(
+      "invoiceMarketBtn", "invoiceMarketPanel", "invoice-market-cb",
+      "All markets",
+      (v) => v
+    );
 
     // ── VAT dropdown logic ────────────────────────────────────────────────────
     function setupVatDropdown(btnId, panelId, checkboxClass, emptyText) {

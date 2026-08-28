@@ -1697,6 +1697,43 @@
           </label>
         </div>
 
+        <div class="tool-label" style="margin-top:8px;margin-bottom:4px;">Invoice type <span style="font-weight:400;color:#9CA3AF;font-size:11px;">(none = all)</span></div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;padding:6px 0;">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:500;cursor:pointer;">
+            <input type="checkbox" class="invoice-fulfillment-type" value="fba" style="accent-color:#3B82F6;width:13px;height:13px;"> FBA
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:500;cursor:pointer;">
+            <input type="checkbox" class="invoice-fulfillment-type" value="mfn" style="accent-color:#3B82F6;width:13px;height:13px;"> Merchant
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:500;cursor:pointer;">
+            <input type="checkbox" class="invoice-fulfillment-type" value="epr" style="accent-color:#3B82F6;width:13px;height:13px;"> EPR
+          </label>
+        </div>
+
+        <div class="tool-label" style="margin-top:8px;margin-bottom:4px;">Markets</div>
+        <div class="inv-dropdown" id="invoiceMarketDropdown">
+          <button class="inv-dropdown-btn" type="button" id="invoiceMarketBtn">
+            <span id="invoiceMarketLabel">All markets</span>
+            <svg class="inv-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="inv-dropdown-panel" id="invoiceMarketPanel">
+            <label><input type="checkbox" class="invoice-market-cb" value="DE"> Germany</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="GB"> United Kingdom</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="FR"> France</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="IT"> Italy</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="ES"> Spain</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="NL"> Netherlands</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="PL"> Poland</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="SE"> Sweden</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="IE"> Ireland</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="BE"> Belgium</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="TR"> Turkey</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="AE"> UAE</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="SA"> Saudi Arabia</label>
+            <label><input type="checkbox" class="invoice-market-cb" value="IN"> India</label>
+          </div>
+        </div>
+
         <div class="tool-label" style="margin-top:8px;margin-bottom:4px;" data-i18n="labelFileFormat">File format</div>
         <div style="display:flex;gap:0;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;background:#fff;">
           <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;cursor:pointer;font-size:12px;font-weight:500;">
